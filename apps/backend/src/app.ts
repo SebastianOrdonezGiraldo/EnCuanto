@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
+import { registerAdminRoutes, type AdminDeps } from './modules/admin/index';
 import { registerHealthRoutes, type HealthDeps } from './modules/health/index';
 import { registerErrorHandler } from './shared/error-handler';
 
 export interface AppDeps {
   health: HealthDeps;
+  /** Admin mínimo (H1). Sin él (sin ADMIN_TOKEN), las rutas /api/admin no existen. */
+  admin?: AdminDeps;
 }
 
 /** Construye la app sin escuchar en ningún puerto, para poder probarla con `inject`. */
@@ -28,6 +31,7 @@ export function buildApp(
 
   registerErrorHandler(app);
   registerHealthRoutes(app, deps.health);
+  if (deps.admin) registerAdminRoutes(app, deps.admin);
 
   return app;
 }

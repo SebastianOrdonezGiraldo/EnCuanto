@@ -10,7 +10,7 @@
   "scripts": {
     "postinstall": "node scripts/ensure-env.mjs",
     "predev": "pnpm infra:up && pnpm db:migrate",
-    "dev": "pnpm --parallel --filter @encuanto/backend --filter @encuanto/web dev",
+    "dev": "pnpm --parallel --filter @encuanto/backend --filter @encuanto/web run \"/^dev(:worker)?$/\"",
     "build": "pnpm -r build",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -20,7 +20,8 @@
     "infra:up": "docker compose -f infra/docker-compose.yml up -d --wait",
     "infra:down": "docker compose -f infra/docker-compose.yml down",
     "db:generate": "pnpm --filter @encuanto/db generate",
-    "db:migrate": "pnpm --filter @encuanto/db migrate"
+    "db:migrate": "pnpm --filter @encuanto/db migrate",
+    "db:seed": "pnpm --filter @encuanto/backend seed"
   },
   "devDependencies": {
     "@encuanto/eslint-plugin": "workspace:*",

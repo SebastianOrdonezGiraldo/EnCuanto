@@ -1,0 +1,5 @@
+﻿sku;nombre;enlace;precio;precio_antes;ean;marca;stock
+COL-1;Licuadora Ondina 1,5 L Roja;https://mercado-colibri.example/p/COL-1;$189.900;$229.900;2000000000022;Ondina;disponible
+COL-2;"Audífonos Vireo ""Pro""; inalámbricos";https://mercado-colibri.example/p/COL-2;99.900;;;Vireo;agotado
+COL-3;Portátil Austral 15.6" 16GB RAM 512GB;https://mercado-colibri.example/p/COL-3;3.499.900;3.999.900;2000000000039;Austral;disponible
+COL-4;Producto sin precio;https://mercado-colibri.example/p/COL-4;;;;;

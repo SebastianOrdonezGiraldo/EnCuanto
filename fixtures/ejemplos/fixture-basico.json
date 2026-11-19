@@ -1,0 +1,40 @@
+{
+  "offers": [
+    {
+      "externalId": "AUR-0001",
+      "title": "Celular Nubrix NX-1290 256GB 8GB RAM Azul",
+      "url": "https://tienda-aurora.example/p/AUR-0001",
+      "imageUrl": "https://tienda-aurora.example/img/AUR-0001.jpg",
+      "price": 1299900,
+      "listPrice": 1599900,
+      "gtin": "2000000000015",
+      "brand": "Nubrix",
+      "availability": "in_stock"
+    },
+    {
+      "externalId": "AUR-0002",
+      "title": "Televisor Kalora 55\" 4K KTV-55U8",
+      "url": "https://tienda-aurora.example/p/AUR-0002",
+      "price": "2.199.900",
+      "brand": "Kalora",
+      "availability": "agotado"
+    },
+    {
+      "externalId": "AUR-0003",
+      "title": "Nevera Tecnova No Frost 300 L Gris",
+      "url": "https://tienda-aurora.example/p/AUR-0003",
+      "price": 1899900,
+      "condition": "reacondicionado"
+    },
+    {
+      "externalId": "AUR-0004",
+      "title": "Precio inválido",
+      "url": "https://tienda-aurora.example/p/AUR-0004",
+      "price": 0
+    },
+    {
+      "externalId": "AUR-0005",
+      "title": "Sin URL"
+    }
+  ]
+}

@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createDb, type DbClient } from './client';
 import { runMigrations } from './migrate';
-import { merchants } from './schema';
+import { merchants, offers, products, productVariants } from './schema';
 
 // Test de integración: necesita PostgreSQL (infra/docker-compose.yml o el servicio del CI).
 const url = process.env.DATABASE_URL;
@@ -38,5 +38,70 @@ describe.skipIf(!url)('migraciones', () => {
       client.db.insert(merchants).values({ slug, name: 'Otra', sourceType: 'manual' }),
     ).rejects.toThrow();
     await client.db.delete(merchants).where(eq(merchants.slug, slug));
+  });
+
+  it('crean todas las tablas de §6', async () => {
+    const rows = await client.sql<{ table_name: string }[]>`
+      select table_name from information_schema.tables
+      where table_schema = 'public' order by table_name`;
+    expect(rows.map((r) => r.table_name)).toEqual(
+      expect.arrayContaining([
+        'ai_comparisons',
+        'brands',
+        'categories',
+        'favorites',
+        'match_reviews',
+        'merchants',
+        'offers',
+        'outbound_clicks',
+        'price_alerts',
+        'price_history',
+        'product_variants',
+        'products',
+        'provider_sync_runs',
+        'quarantined_records',
+        'search_queries',
+        'users',
+      ]),
+    );
+  });
+
+  it('offers: único (merchant_id, external_id) y precio positivo', async () => {
+    const slug = `test-offers-${Date.now()}`;
+    const [m] = await client.db
+      .insert(merchants)
+      .values({ slug, name: 'Tienda Ficticia', sourceType: 'manual' })
+      .returning();
+    const base = { merchantId: m!.id, titleRaw: 'x', url: 'https://t.example/p/1' };
+    await client.db.insert(offers).values({ ...base, externalId: 'A', price: 1000 });
+    await expect(
+      client.db.insert(offers).values({ ...base, externalId: 'A', price: 2000 }),
+    ).rejects.toThrow();
+    await expect(
+      client.db.insert(offers).values({ ...base, externalId: 'B', price: 0 }),
+    ).rejects.toThrow();
+    await expect(
+      client.db.insert(offers).values({ ...base, externalId: 'C', price: 1000, listPrice: 900 }),
+    ).rejects.toThrow();
+    await client.db.delete(merchants).where(eq(merchants.id, m!.id));
+  });
+
+  it('products.search_tsv se genera en español y sin tildes; gtin único si no es nulo', async () => {
+    const [p] = await client.db
+      .insert(products)
+      .values({ canonicalName: 'Nevecón Ártico 300 L', modelNumber: 'BCD205' })
+      .returning();
+    const [row] = await client.sql<{ match: boolean }[]>`
+      select search_tsv @@ plainto_tsquery('spanish', 'nevecon artico bcd205') as match
+      from products where id = ${p!.id}`;
+    expect(row!.match).toBe(true);
+
+    await client.db.insert(productVariants).values([{ productId: p!.id }, { productId: p!.id }]);
+    const gtin = `2${String(Date.now()).slice(-12)}`;
+    await client.db.insert(productVariants).values({ productId: p!.id, gtin });
+    await expect(
+      client.db.insert(productVariants).values({ productId: p!.id, gtin }),
+    ).rejects.toThrow();
+    await client.db.delete(products).where(eq(products.id, p!.id));
   });
 });
