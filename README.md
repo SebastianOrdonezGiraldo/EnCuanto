@@ -13,7 +13,8 @@ El documento maestro está en [docs/CONTEXTO-PROYECTO.md](docs/CONTEXTO-PROYECTO
 
 ```bash
 pnpm i      # instala y crea .env a partir de .env.example si no existe
-pnpm dev    # levanta Postgres y Redis, aplica migraciones y arranca API y web
+pnpm dev    # levanta Postgres y Redis, aplica migraciones y arranca API, worker y web
+pnpm db:seed  # catálogo sintético: 3 comerciantes ficticios y ~2.400 ofertas
 ```
 
 - Web: http://localhost:3000
@@ -23,7 +24,8 @@ pnpm dev    # levanta Postgres y Redis, aplica migraciones y arranca API y web
 
 | Comando                             | Qué hace                                                                                |
 | ----------------------------------- | --------------------------------------------------------------------------------------- |
-| `pnpm dev`                          | Infra + migraciones + API (`tsx watch`) + web (`next dev`)                              |
+| `pnpm dev`                          | Infra + migraciones + API y worker (`tsx watch`) + web (`next dev`)                     |
+| `pnpm db:seed [--day N]`            | Genera feeds sintéticos y los sincroniza; `--day N` simula N días de cambios de precio  |
 | `pnpm lint` / `pnpm format:check`   | ESLint y Prettier                                                                       |
 | `pnpm typecheck`                    | `tsc --noEmit` en todos los paquetes                                                    |
 | `pnpm test`                         | Vitest. Los tests de integración usan `DATABASE_URL` y `REDIS_URL`; sin ellas se omiten |
@@ -39,6 +41,23 @@ apps/web          Next.js 15 (App Router) + Tailwind 4
 apps/backend      Fastify 5 (monolito modular)
 packages/contracts  Esquemas Zod compartidos
 packages/db       Esquema Drizzle, migraciones y cliente
+fixtures/         Feeds sintéticos de ejemplo (los del seed van a fixtures/generado/, ignorado)
 infra/            docker-compose.yml de desarrollo
 docs/             Documento maestro, ADR y marca
+```
+
+## Ingesta (H1)
+
+Las ofertas llegan solo de fuentes autorizadas (§4): un adaptador por comerciante según
+`merchants.provider_config` (`fixture`, `csv` o `google_merchant`). El worker (`src/worker.ts`)
+procesa la cola `provider-sync` de BullMQ y programa un sync cada `SYNC_INTERVAL_MINUTES`.
+Cada ejecución queda en `provider_sync_runs`; los registros inválidos, en `quarantined_records`.
+
+Admin mínimo (requiere `ADMIN_TOKEN` en `.env`; sin él las rutas no existen):
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" localhost:4000/api/admin/merchants
+curl -H "Authorization: Bearer $ADMIN_TOKEN" "localhost:4000/api/admin/sync-runs?merchant=tienda-aurora"
+curl -H "Authorization: Bearer $ADMIN_TOKEN" localhost:4000/api/admin/quarantine
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" localhost:4000/api/admin/merchants/tienda-aurora/sync
 ```
