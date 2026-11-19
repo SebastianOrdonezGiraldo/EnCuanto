@@ -15,6 +15,20 @@
       "when": 1795097747204,
       "tag": "0001_merchants",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795115949256,
+      "tag": "0002_immutable_unaccent",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1795116022446,
+      "tag": "0003_catalog_ingestion",
+      "breakpoints": true
     }
   ]
 }
