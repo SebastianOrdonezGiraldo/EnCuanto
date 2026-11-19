@@ -14,20 +14,21 @@ function prettyAvailable(): boolean {
   }
 }
 
+/** Marcador fijo para peticiones que no coinciden con ninguna ruta registrada. */
+export const UNMATCHED_ROUTE = '<unmatched>';
+
 /**
- * Ruta que se registra en los logs: el patrón de la ruta (`/go/:offerId`) si existe y,
- * si no, el path sin query. Nunca la query, que puede llevar emails, tokens o búsquedas (§4.3).
+ * Ruta que se registra en los logs: solo el patrón de una ruta registrada (`/go/:offerId`).
+ * Si la petición no coincide con ninguna ruta, un marcador fijo: nunca se registra ningún
+ * segmento del path ni de la query del cliente, que pueden llevar emails o tokens (§4.3).
  */
-export function loggablePath(request: Pick<FastifyRequest, 'url' | 'routeOptions'>): string {
-  const pattern = request.routeOptions?.url;
-  if (pattern) return pattern;
-  const path = request.url.split('?', 1)[0] ?? '/';
-  return path.split('#', 1)[0] ?? '/';
+export function loggablePath(request: Pick<FastifyRequest, 'routeOptions'>): string {
+  return request.routeOptions?.url ?? UNMATCHED_ROUTE;
 }
 
 /**
  * Serializadores de pino: deciden qué se escribe de cada petición y respuesta.
- * Lista blanca: método y ruta, y el código de estado. Sin IP, puerto, cabeceras ni query.
+ * Lista blanca: método y patrón de ruta, y el código de estado. Sin IP, puerto, cabeceras ni query.
  */
 export const serializers = {
   req: (request: FastifyRequest) => ({ method: request.method, url: loggablePath(request) }),

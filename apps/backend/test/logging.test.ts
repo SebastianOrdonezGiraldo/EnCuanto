@@ -68,24 +68,39 @@ describe('logs de peticiones (§4.3, §13)', () => {
     expect(completed?.request_id).toBe(id);
   });
 
-  it('en rutas desconocidas registra el path sin query', async () => {
+  it.each([
+    ['email en el path', `/no-existe/${EMAIL}?token=${TOKEN}`],
+    ['email codificado en el path', `/no-existe/${encodeURIComponent(EMAIL)}/${TOKEN}`],
+    ['token en varios segmentos', `/${TOKEN}/${encodeURIComponent(EMAIL)}#${TOKEN}`],
+  ])('en rutas desconocidas no registra el path (%s)', async (_caso, url) => {
     const { app, lines } = appWithCapturedLogs();
-    await app.inject({ method: 'GET', url: `/no-existe?email=${EMAIL}` });
+    const res = await app.inject({ method: 'GET', url });
     await app.close();
+
+    expect(res.statusCode).toBe(404);
     const raw = lines.join('');
-    expect(raw).not.toContain(EMAIL);
-    expect(raw).toContain('"url":"/no-existe"');
+    for (const forbidden of [EMAIL, encodeURIComponent(EMAIL), 'persona', TOKEN, 'no-existe']) {
+      expect(raw).not.toContain(forbidden);
+    }
+
+    const entries = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    const incoming = entries.find((e) => e.msg === 'incoming request');
+    const completed = entries.find((e) => e.msg === 'request completed');
+    expect(incoming?.req).toEqual({ method: 'GET', url: '<unmatched>' });
+    expect(completed?.res).toEqual({ statusCode: 404 });
+    const id = res.headers['x-request-id'];
+    expect(incoming?.request_id).toBe(id);
+    expect(completed?.request_id).toBe(id);
   });
 });
 
 describe('loggablePath', () => {
-  it('prefiere el patrón de la ruta', () => {
-    expect(
-      loggablePath({ url: '/go/123?x=1', routeOptions: { url: '/go/:offerId' } } as never),
-    ).toBe('/go/:offerId');
+  it('usa el patrón de la ruta', () => {
+    expect(loggablePath({ routeOptions: { url: '/go/:offerId' } } as never)).toBe('/go/:offerId');
   });
 
-  it('quita query y fragmento si no hay patrón', () => {
-    expect(loggablePath({ url: '/a/b?q=1#f', routeOptions: {} } as never)).toBe('/a/b');
+  it('usa un marcador fijo si no hay ruta', () => {
+    expect(loggablePath({ routeOptions: {} } as never)).toBe('<unmatched>');
+    expect(loggablePath({} as never)).toBe('<unmatched>');
   });
 });
