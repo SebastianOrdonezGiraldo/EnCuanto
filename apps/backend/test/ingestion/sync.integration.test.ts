@@ -3,7 +3,14 @@ import { and, eq, inArray, like, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { writeSyntheticFeeds } from '../../src/dev/synthetic';
-import { listSyncRuns, runSync, type SyncDeps } from '../../src/modules/ingestion/index';
+import {
+  listSyncRuns,
+  retryPendingInvalidation,
+  runSync,
+  SyncFailedError,
+  type SyncDeps,
+} from '../../src/modules/ingestion/index';
+import { CsvFeedAdapter, FeedSource } from '../../src/modules/providers/index';
 import { upsertMerchant } from '../../src/modules/merchants/index';
 import { silentLog } from '../../src/shared/log';
 import { DATABASE_URL, fakeAdapter, offer, setupDb, type TestDb } from './helpers';
@@ -212,18 +219,93 @@ describe.skipIf(!DATABASE_URL)('ingesta: operación de las fuentes (§9)', () =>
     expect(rows).toEqual([{ occurrences: 2 }]);
   });
 
-  it('un fallo al invalidar la caché no marca el sync como fallido', async () => {
+  it('si Redis falla al invalidar la caché: el sync no falla y la invalidación queda pendiente', async () => {
     const slug = await merchant('cache');
+    let redisDown = true;
+    let invalidations = 0;
     const deps: SyncDeps = {
       db: ctx.client,
       fixturesDir: ctx.fixturesDir,
       log: silentLog,
       onCatalogChanged: async () => {
-        throw new Error('redis caído');
+        if (redisDown) throw new Error('redis caído');
+        invalidations++;
       },
       adapterFor: (s) => fakeAdapter(s, () => [offer('K1', 100000)]),
     };
-    await expect(runSync(deps, slug)).resolves.toMatchObject({ status: 'succeeded' });
+    const first = await runSync(deps, slug);
+    expect(first.status).toBe('succeeded');
+    const [run] = await listSyncRuns(ctx.client.db, { merchantSlug: slug, limit: 1 });
+    expect(run!.errorSummary.catalog_invalidation_pending).toBe(true);
+
+    // Redis vuelve: el siguiente sync (sin cambios propios) recupera la invalidación pendiente.
+    redisDown = false;
+    const second = await runSync(deps, slug);
+    expect(second).toMatchObject({ itemsInserted: 0, itemsPriceChanged: 0 });
+    expect(invalidations).toBe(1);
+    const [after] = await listSyncRuns(ctx.client.db, { merchantSlug: slug, limit: 2 });
+    expect(after!.errorSummary.catalog_invalidation_pending).toBeUndefined();
+    expect(await retryPendingInvalidation(deps)).toBe(false);
+  });
+
+  it('un sync que falla tras confirmar un lote invalida igualmente la caché', async () => {
+    const slug = await merchant('parcial');
+    let invalidations = 0;
+    const deps: SyncDeps = {
+      db: ctx.client,
+      fixturesDir: ctx.fixturesDir,
+      log: silentLog,
+      onCatalogChanged: async () => void invalidations++,
+      adapterFor: (s) =>
+        fakeAdapter(s, function* () {
+          for (let i = 0; i < 600; i++) yield offer(`P${i}`, 100000);
+          throw new Error('fuente cortada');
+        }),
+    };
+    await expect(runSync(deps, slug)).rejects.toBeInstanceOf(SyncFailedError);
+    const [run] = await listSyncRuns(ctx.client.db, { merchantSlug: slug, limit: 1 });
+    expect(run).toMatchObject({ status: 'failed', itemsUpserted: 500 });
+    expect(invalidations).toBe(1);
+  });
+
+  it('un corte del stream CSV falla el sync de forma controlada y el siguiente funciona', async () => {
+    const slug = await merchant('csv-cortado');
+    const broken = () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode('id,t,u,p\nX1,Uno,https://t.example/1,1000\n'),
+            );
+            setTimeout(() => controller.error(new Error('ECONNRESET')), 20);
+          },
+        }),
+        { status: 200 },
+      );
+    const adapter = new CsvFeedAdapter(
+      slug,
+      'partner_feed',
+      'https://feeds.example/f.csv',
+      ',',
+      { externalId: 'id', title: 't', url: 'u', price: 'p' },
+      new FeedSource({
+        fixturesDir: ctx.fixturesDir,
+        fetch: async () => broken(),
+        lookup: async () => ['93.184.215.14'],
+      }),
+    );
+    const deps: SyncDeps = {
+      db: ctx.client,
+      fixturesDir: ctx.fixturesDir,
+      log: silentLog,
+      adapterFor: () => adapter,
+    };
+    await expect(runSync(deps, slug)).rejects.toBeInstanceOf(SyncFailedError);
+    const ok = await runSync(
+      { ...deps, adapterFor: (s) => fakeAdapter(s, () => [offer('X1', 1000)]) },
+      slug,
+    );
+    expect(ok.status).toBe('succeeded');
   });
 
   it('el error de un parser no se guarda con los bytes del feed', async () => {
@@ -238,7 +320,10 @@ describe.skipIf(!DATABASE_URL)('ingesta: operación de las fuentes (§9)', () =>
           return [];
         }),
     };
-    await expect(runSync(deps, slug)).rejects.toThrow();
+    const error = await runSync(deps, slug).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SyncFailedError);
+    expect(String((error as Error).stack)).not.toContain('SECRET_TOKEN');
+    expect((error as Error).cause).toBeUndefined();
     const [run] = await listSyncRuns(ctx.client.db, { merchantSlug: slug, limit: 1 });
     expect(run!.errorSummary.error).toBe('error al leer o procesar el feed (SyntaxError)');
     expect(JSON.stringify(run)).not.toContain('SECRET_TOKEN');
@@ -255,7 +340,7 @@ describe.skipIf(!DATABASE_URL)('ingesta: operación de las fuentes (§9)', () =>
           throw new Error('fuente caída');
         }),
     };
-    for (let i = 0; i < 5; i++) await expect(runSync(deps, slug)).rejects.toThrow('fuente caída');
+    for (let i = 0; i < 5; i++) await expect(runSync(deps, slug)).rejects.toThrow(SyncFailedError);
     await expect(runSync(deps, slug)).resolves.toMatchObject({
       status: 'skipped',
       summary: { skipped_reason: 'circuit_open' },

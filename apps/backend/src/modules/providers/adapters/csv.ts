@@ -1,31 +1,45 @@
 import { parse } from 'csv-parse';
+import type { Readable } from 'node:stream';
 import type { CsvColumns } from '../config';
 import type { FeedSource } from '../feed-source';
 import type { RawOfferInput } from '../raw-offer';
 import type { ProviderAdapter, SourceType, SyncContext } from '../types';
 
-/** Lee un CSV/TSV en streaming. Tolera BOM, CRLF (Windows) y filas con columnas de menos. */
+/**
+ * Lee un CSV/TSV en streaming. Tolera BOM, CRLF (Windows) y filas con columnas de menos.
+ * `pipe` no propaga los errores del origen: se reenvían a mano al parser, así un corte de la
+ * descarga rechaza la iteración (y `runSync` registra el fallo) en vez de tumbar el proceso.
+ * Al terminar, fallar o cancelarse se destruyen los dos streams.
+ */
 export async function* readDelimited(
-  stream: NodeJS.ReadableStream,
+  stream: Readable,
   delimiter: string,
   signal: AbortSignal,
 ): AsyncIterable<Record<string, string>> {
-  const parser = stream.pipe(
-    parse({
-      columns: (header: string[]) => header.map((h) => h.trim()),
-      bom: true,
-      delimiter,
-      relax_column_count: true,
-      // Comillas sueltas dentro de un campo sin comillas (p. ej. 15.6") se conservan.
-      relax_quotes: true,
-      quote: delimiter === '\t' ? false : '"',
-      skip_empty_lines: true,
-      trim: true,
-    }),
-  );
-  for await (const row of parser) {
-    signal.throwIfAborted();
-    yield row as Record<string, string>;
+  const parser = parse({
+    columns: (header: string[]) => header.map((h) => h.trim()),
+    bom: true,
+    delimiter,
+    relax_column_count: true,
+    // Comillas sueltas dentro de un campo sin comillas (p. ej. 15.6") se conservan.
+    relax_quotes: true,
+    quote: delimiter === '\t' ? false : '"',
+    skip_empty_lines: true,
+    trim: true,
+  });
+  const forward = (error: Error) => parser.destroy(error);
+  stream.on('error', forward);
+  stream.pipe(parser);
+  try {
+    for await (const row of parser) {
+      signal.throwIfAborted();
+      yield row as Record<string, string>;
+    }
+  } finally {
+    stream.off('error', forward);
+    stream.unpipe(parser);
+    stream.destroy();
+    parser.destroy();
   }
 }
 

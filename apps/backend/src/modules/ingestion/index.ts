@@ -7,11 +7,14 @@ export {
   createSyncQueue,
   createSyncWorker,
   enqueueSync,
+  logWorkerEvents,
   scheduleSyncs,
   SYNC_QUEUE,
   type SyncJobData,
 } from './queue';
+export { safeJobErrorMessage, SyncFailedError } from './errors';
 export { boundedPayload, recordHash, zodReason } from './quarantine';
+export { reconcileSchedules, startScheduleReconciler } from './schedules';
 export {
   CIRCUIT_FAILURES,
   CIRCUIT_PAUSE_MS,
@@ -24,6 +27,7 @@ export {
 } from './runs.service';
 export {
   BATCH_SIZE,
+  retryPendingInvalidation,
   runSync,
   toOfferOrQuarantine,
   type SyncDeps,

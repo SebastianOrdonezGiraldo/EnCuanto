@@ -20,6 +20,7 @@ import {
   safeSyncErrorMessage,
   type ProviderAdapter,
 } from '../providers/index';
+import { SyncFailedError } from './errors';
 import { boundedPayload, recordHash, zodReason } from './quarantine';
 import { DROP_THRESHOLD, isCircuitOpen, recentItemsSeenAverage } from './runs.service';
 
@@ -111,6 +112,7 @@ export async function runSync(
   const signal = options.signal ?? new AbortController().signal;
   const merchant = await getMerchantBySlug(db, merchantSlug);
   if (!merchant) throw new NotFoundError('Comerciante no encontrado', { merchant: merchantSlug });
+  await retryPendingInvalidation(deps);
 
   const skipped = async (reason: string): Promise<SyncResult> => {
     const summary: SyncErrorSummary = { skipped_reason: reason };
@@ -267,20 +269,7 @@ async function syncLocked(
 
     await finishRun(deps.db, runId, 'succeeded', counts, summary);
     log.info({ merchant: merchantSlug, run_id: runId, ...counts }, 'sync: fin');
-    // Cualquier cambio visible invalida la caché de búsqueda (§8.6), no solo el precio.
-    // Un fallo de la caché no convierte en fallido un sync ya guardado.
-    if (counts.inserted + counts.priceChanged + counts.contentChanged > 0) {
-      await deps.onCatalogChanged?.().catch((error: unknown) =>
-        log.warn(
-          {
-            merchant: merchantSlug,
-            run_id: runId,
-            err: error instanceof Error ? error.message : 'error desconocido',
-          },
-          'sync: no se pudo invalidar la caché del catálogo',
-        ),
-      );
-    }
+    if (hasChanges(counts)) await invalidateCatalog(deps, runId, merchantSlug);
     return result(runId, merchantSlug, 'succeeded', counts, summary);
   } catch (error) {
     // Mensaje saneado: nunca bytes del feed (los parsers los citan) ni URLs con tokens.
@@ -289,8 +278,68 @@ async function syncLocked(
     if (Object.keys(reasons).length > 0) summary.quarantine_reasons = reasons;
     await finishRun(deps.db, runId, 'failed', counts, summary);
     log.error({ merchant: merchantSlug, run_id: runId, err: message }, 'sync: falló');
-    throw error;
+    // Los lotes ya confirmados son visibles: la caché se invalida aunque el sync falle.
+    if (hasChanges(counts)) await invalidateCatalog(deps, runId, merchantSlug);
+    // Hacia BullMQ sale un error nuevo con el mensaje saneado, sin el original ni su `cause`.
+    throw new SyncFailedError(message, runId);
   }
+}
+
+/** Cualquier cambio visible (oferta nueva, precio u otro campo) invalida la caché (§8.6). */
+function hasChanges(c: { inserted: number; priceChanged: number; contentChanged: number }) {
+  return c.inserted + c.priceChanged + c.contentChanged > 0;
+}
+
+/** Marca de la ejecución que no pudo invalidar la caché (se reintenta en el siguiente sync). */
+const PENDING = 'catalog_invalidation_pending';
+
+/**
+ * Sube la versión de catálogo. Si falla (Redis caído) no hace fallar el sync: deja la marca
+ * `catalog_invalidation_pending` en la ejecución, que `retryPendingInvalidation` recupera.
+ */
+async function invalidateCatalog(deps: SyncDeps, runId: string, merchantSlug: string) {
+  if (!deps.onCatalogChanged) return;
+  try {
+    await deps.onCatalogChanged();
+  } catch (error) {
+    deps.log.warn(
+      {
+        merchant: merchantSlug,
+        run_id: runId,
+        err: error instanceof Error ? error.message : 'error desconocido',
+      },
+      'sync: no se pudo invalidar la caché del catálogo; queda pendiente',
+    );
+    await deps.db.db
+      .update(providerSyncRuns)
+      .set({
+        errorSummary: sql`${providerSyncRuns.errorSummary} || ${JSON.stringify({ [PENDING]: true })}::jsonb`,
+      })
+      .where(eq(providerSyncRuns.id, runId));
+  }
+}
+
+/** Reintenta las invalidaciones que quedaron pendientes. Se llama al empezar cada sync. */
+export async function retryPendingInvalidation(deps: SyncDeps): Promise<boolean> {
+  if (!deps.onCatalogChanged) return false;
+  const pending = sql`${providerSyncRuns.errorSummary} ? ${PENDING}`;
+  const [row] = await deps.db.db
+    .select({ id: providerSyncRuns.id })
+    .from(providerSyncRuns)
+    .where(pending)
+    .limit(1);
+  if (!row) return false;
+  try {
+    await deps.onCatalogChanged();
+  } catch {
+    return false;
+  }
+  await deps.db.db
+    .update(providerSyncRuns)
+    .set({ errorSummary: sql`${providerSyncRuns.errorSummary} - ${PENDING}::text` })
+    .where(pending);
+  deps.log.info({}, 'sync: invalidación de caché pendiente recuperada');
+  return true;
 }
 
 function result(

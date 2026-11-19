@@ -29,6 +29,8 @@ export interface SyncErrorSummary {
   quarantine_reasons?: Record<string, number>;
   /** Alertas operativas (§9), p. ej. caída de `items_seen`. */
   alerts?: string[];
+  /** La ejecución guardó cambios pero no pudo invalidar la caché; se reintenta en el siguiente sync. */
+  catalog_invalidation_pending?: boolean;
 }
 
 /** Cada ejecución de sync de un comerciante (§6, §9). Dueño: módulo `ingestion`. */

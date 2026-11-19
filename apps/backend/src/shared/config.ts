@@ -14,6 +14,8 @@ const envSchema = z.object({
   /** Cada cuántos minutos se sincroniza cada comerciante. 0 desactiva la programación. */
   SYNC_INTERVAL_MINUTES: z.coerce.number().int().min(0).max(10_080).default(360),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(2),
+  /** Cada cuántos segundos el worker reconcilia los syncs programados con los comerciantes. */
+  SCHEDULE_RECONCILE_SECONDS: z.coerce.number().int().min(5).max(3600).default(60),
   /**
    * Token del admin mínimo (H1), hasta que haya usuarios (H4). Sin él, las rutas /api/admin
    * no se registran. Mínimo 32 caracteres.

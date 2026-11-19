@@ -1,4 +1,6 @@
 import { Queue, Worker, type ConnectionOptions, type Job } from 'bullmq';
+import type { Log } from '../../shared/log';
+import { safeJobErrorMessage } from './errors';
 
 /** Cola de sincronización de fuentes (§5: BullMQ sobre Redis). */
 export const SYNC_QUEUE = 'provider-sync';
@@ -82,4 +84,18 @@ export function createSyncWorker(
     concurrency,
     ...(prefix ? { prefix } : {}),
   });
+}
+
+/**
+ * Registra los eventos `failed` y `error` del worker con un mensaje saneado. Defensa adicional:
+ * `runSync` ya lanza un `SyncFailedError` sin bytes del feed, pero el listener no confía en ello.
+ */
+export function logWorkerEvents(worker: Worker<SyncJobData>, log: Log): void {
+  worker.on('failed', (job, err) =>
+    log.warn(
+      { job_id: job?.id, merchant: job?.data.merchantSlug, err: safeJobErrorMessage(err) },
+      'job falló',
+    ),
+  );
+  worker.on('error', (err) => log.error({ err: safeJobErrorMessage(err) }, 'worker: error'));
 }
