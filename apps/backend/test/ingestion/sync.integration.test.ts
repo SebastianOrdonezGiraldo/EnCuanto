@@ -248,6 +248,61 @@ describe.skipIf(!DATABASE_URL)('ingesta: operación de las fuentes (§9)', () =>
     expect(await retryPendingInvalidation(deps)).toBe(false);
   });
 
+  it('la recuperación no borra una marca pendiente creada después de subir la versión', async () => {
+    const slugA = await merchant('carrera-a');
+    const slugB = await merchant('carrera-b');
+    const failing: SyncDeps = {
+      db: ctx.client,
+      fixturesDir: ctx.fixturesDir,
+      log: silentLog,
+      onCatalogChanged: async () => {
+        throw new Error('redis caído');
+      },
+      adapterFor: (s) => fakeAdapter(s, () => [offer(`${s}-1`, 100000)]),
+    };
+    const pendingOf = async (slug: string) =>
+      (await listSyncRuns(ctx.client.db, { merchantSlug: slug, limit: 1 }))[0]!.errorSummary
+        .catalog_invalidation_pending;
+
+    // 1. A deja una invalidación pendiente.
+    await runSync(failing, slugA);
+    expect(await pendingOf(slugA)).toBe(true);
+
+    // 2. La recuperación de A sube la versión y queda detenida antes del UPDATE.
+    let increments = 0;
+    let reached!: () => void;
+    const incremented = new Promise<void>((resolve) => (reached = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const recovery = retryPendingInvalidation({
+      ...failing,
+      onCatalogChanged: async () => {
+        increments++;
+        reached();
+        await gate;
+      },
+    });
+    await incremented;
+
+    // 3. B confirma cambios y su invalidación falla: nueva marca pendiente.
+    await runSync(failing, slugB);
+    expect(await pendingOf(slugB)).toBe(true);
+
+    // 4. A continúa: limpia su marca y conserva la de B.
+    release();
+    expect(await recovery).toBe(true);
+    expect(increments).toBe(1);
+    expect(await pendingOf(slugA)).toBeUndefined();
+    expect(await pendingOf(slugB)).toBe(true);
+
+    // 5. Una recuperación posterior sube la versión otra vez antes de quitar la marca de B.
+    const counting: SyncDeps = { ...failing, onCatalogChanged: async () => void increments++ };
+    expect(await retryPendingInvalidation(counting)).toBe(true);
+    expect(increments).toBe(2);
+    expect(await pendingOf(slugB)).toBeUndefined();
+    expect(await retryPendingInvalidation(counting)).toBe(false);
+  });
+
   it('un sync que falla tras confirmar un lote invalida igualmente la caché', async () => {
     const slug = await merchant('parcial');
     let invalidations = 0;

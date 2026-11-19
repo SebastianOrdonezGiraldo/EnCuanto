@@ -319,16 +319,20 @@ async function invalidateCatalog(deps: SyncDeps, runId: string, merchantSlug: st
   }
 }
 
-/** Reintenta las invalidaciones que quedaron pendientes. Se llama al empezar cada sync. */
+/**
+ * Reintenta las invalidaciones que quedaron pendientes. Se llama al empezar cada sync.
+ *
+ * Fotografía los ids pendientes *antes* de subir la versión y solo limpia esos: una marca que
+ * otro sync deje mientras tanto corresponde a cambios posteriores a esta subida y debe quedar
+ * para la siguiente recuperación.
+ */
 export async function retryPendingInvalidation(deps: SyncDeps): Promise<boolean> {
   if (!deps.onCatalogChanged) return false;
   const pending = sql`${providerSyncRuns.errorSummary} ? ${PENDING}`;
-  const [row] = await deps.db.db
-    .select({ id: providerSyncRuns.id })
-    .from(providerSyncRuns)
-    .where(pending)
-    .limit(1);
-  if (!row) return false;
+  const ids = (
+    await deps.db.db.select({ id: providerSyncRuns.id }).from(providerSyncRuns).where(pending)
+  ).map((r) => r.id);
+  if (ids.length === 0) return false;
   try {
     await deps.onCatalogChanged();
   } catch {
@@ -337,8 +341,8 @@ export async function retryPendingInvalidation(deps: SyncDeps): Promise<boolean>
   await deps.db.db
     .update(providerSyncRuns)
     .set({ errorSummary: sql`${providerSyncRuns.errorSummary} - ${PENDING}::text` })
-    .where(pending);
-  deps.log.info({}, 'sync: invalidación de caché pendiente recuperada');
+    .where(inArray(providerSyncRuns.id, ids));
+  deps.log.info({ runs: ids.length }, 'sync: invalidación de caché pendiente recuperada');
   return true;
 }
 
