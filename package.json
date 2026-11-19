@@ -1,0 +1,37 @@
+{
+  "name": "encuanto",
+  "private": true,
+  "description": "¿EnCuánto? Comparador de precios para Colombia",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "type": "module",
+  "scripts": {
+    "postinstall": "node scripts/ensure-env.mjs",
+    "predev": "pnpm infra:up && pnpm db:migrate",
+    "dev": "pnpm --parallel --filter @encuanto/backend --filter @encuanto/web dev",
+    "build": "pnpm -r build",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d --wait",
+    "infra:down": "docker compose -f infra/docker-compose.yml down",
+    "db:generate": "pnpm --filter @encuanto/db generate",
+    "db:migrate": "pnpm --filter @encuanto/db migrate"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@next/eslint-plugin-next": "15.5.28",
+    "@types/node": "22.20.5",
+    "eslint": "9.39.5",
+    "eslint-config-prettier": "10.1.8",
+    "globals": "16.5.0",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.59.4",
+    "vitest": "3.2.7"
+  }
+}

@@ -1,0 +1,56 @@
+@import 'tailwindcss';
+
+/*
+ * Tokens de marca (ADR 0001). En Tailwind 4 el tema se declara en CSS con @theme
+ * (equivale a theme.extend.colors de la v3). En componentes se usan solo estos tokens,
+ * nunca hex sueltos.
+ */
+@theme {
+  --color-brand-50: #e8f3ee;
+  --color-brand-300: #3dd9a0;
+  --color-brand-600: #0b6e4f;
+  --color-ink-500: #5b6475;
+  --color-ink-900: #14213d;
+  --color-paper: #fbf8f1;
+  --color-maiz-400: #ffc845;
+  --color-error-700: #b42318;
+  --color-warn-700: #9a5b00;
+  --color-night: #101826;
+  --color-night-text: #e6eaf2;
+
+  --font-display: var(--font-bricolage), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  html {
+    @apply bg-paper text-ink-900 antialiased;
+  }
+  @media (prefers-color-scheme: dark) {
+    html {
+      @apply bg-night text-night-text;
+    }
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-display;
+  }
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-brand-600 dark:outline-brand-300;
+  }
+}
+
+/* Precios alineados en listas (ADR 0001). */
+@utility price {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
