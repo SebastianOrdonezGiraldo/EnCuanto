@@ -1,0 +1,7 @@
+# Fin de línea LF en todo el texto, también en Windows (evita fallos de prettier --check).
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary

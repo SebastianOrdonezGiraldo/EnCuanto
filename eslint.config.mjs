@@ -1,3 +1,4 @@
+import encuanto from '@encuanto/eslint-plugin';
 import js from '@eslint/js';
 import nextPlugin from '@next/eslint-plugin-next';
 import prettier from 'eslint-config-prettier';
@@ -40,21 +41,10 @@ export default tseslint.config(
     rules: { 'no-console': 'off' },
   },
   {
-    // Regla de módulos (§5): solo se importa el index.ts de otro módulo.
+    // Regla de módulos (§5): resuelve el destino de cada import relativo.
     files: ['apps/backend/src/**/*.ts'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: ['**/modules/*/*', '!**/modules/*/index'],
-              message: 'Importa solo el index.ts del módulo (regla de módulos §5).',
-            },
-          ],
-        },
-      ],
-    },
+    plugins: { encuanto },
+    rules: { 'encuanto/module-boundaries': 'error' },
   },
   prettier,
 );
