@@ -1,0 +1,38 @@
+# Servicios de desarrollo local: PostgreSQL 16 y Redis 7.
+# Uso: pnpm infra:up / pnpm infra:down (desde la raíz).
+# No es la configuración de producción: el despliegue se decide en H7 (ver docs/adr/0002).
+name: encuanto
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: encuanto
+      POSTGRES_PASSWORD: encuanto
+      POSTGRES_DB: encuanto
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U encuanto -d encuanto']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '127.0.0.1:6379:6379'
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
+  redisdata:
