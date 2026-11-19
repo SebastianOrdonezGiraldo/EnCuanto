@@ -84,14 +84,20 @@ describe('sondas de /health', () => {
 describe('loggerOptions', () => {
   it('no pide pino-pretty si no está instalado', async () => {
     const { loggerOptions } = await import('../src/shared/logger');
-    const opts = loggerOptions({ NODE_ENV: 'development', LOG_LEVEL: 'info' }, () => false);
+    const opts = loggerOptions(
+      { NODE_ENV: 'development', LOG_LEVEL: 'info' },
+      { isPrettyAvailable: () => false },
+    );
     expect(opts).not.toHaveProperty('transport');
   });
 
   it('no usa pino-pretty en producción', async () => {
     const { loggerOptions } = await import('../src/shared/logger');
     expect(
-      loggerOptions({ NODE_ENV: 'production', LOG_LEVEL: 'info' }, () => true),
+      loggerOptions(
+        { NODE_ENV: 'production', LOG_LEVEL: 'info' },
+        { isPrettyAvailable: () => true },
+      ),
     ).not.toHaveProperty('transport');
   });
 });

@@ -14,8 +14,9 @@ export function buildApp(
 ): FastifyInstance {
   const app = Fastify({
     logger: options.logger ?? false,
-    // request_id en cada log (§13). Se respeta x-request-id si viene de un proxy.
-    requestIdHeader: 'x-request-id',
+    // request_id en cada log (§13). Lo genera siempre el servidor: no se acepta x-request-id
+    // del cliente, para que nadie pueda inyectar datos arbitrarios en los logs.
+    requestIdHeader: false,
     requestIdLogLabel: 'request_id',
     genReqId: () => randomUUID(),
     disableRequestLogging: false,
