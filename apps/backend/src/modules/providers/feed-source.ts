@@ -4,12 +4,18 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { TokenBucket, withRetry } from './rate-limit';
+import { assertSafeFeedUrl, defaultLookup, FeedUrlError, type HostLookup } from './url-guard';
+
+/** Redirecciones máximas al descargar un feed. */
+export const MAX_REDIRECTS = 5;
 
 export interface FeedSourceOptions {
   /** Directorio de los feeds `fixture:` (datos sintéticos). */
   fixturesDir: string;
   /** Inyectable en tests. */
   fetch?: typeof fetch;
+  /** Resolución DNS para validar destinos (inyectable en tests). */
+  lookup?: HostLookup;
   /** Tiempo máximo por petición HTTP. */
   timeoutMs?: number;
   /** Reintentos ante fallos de red, 429 y 5xx (§9: 3). */
@@ -77,15 +83,37 @@ export class FeedSource {
     }
   }
 
+  /**
+   * Las redirecciones se siguen a mano para validar cada destino con `assertSafeFeedUrl`:
+   * un feed comprometido no puede llevar al worker a http, a la red interna ni a metadatos.
+   */
+  private async fetchFollowing(
+    url: string,
+    method: 'GET' | 'HEAD',
+    signal: AbortSignal,
+  ): Promise<Response> {
+    const lookup = this.options.lookup ?? defaultLookup;
+    let current = url;
+    for (let hop = 0; ; hop++) {
+      await assertSafeFeedUrl(current, lookup);
+      const response = await this.fetchImpl(current, {
+        method,
+        redirect: 'manual',
+        signal: AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs ?? 60_000)]),
+      });
+      const location = response.headers.get('location');
+      if (response.status < 300 || response.status >= 400 || !location) return response;
+      await response.body?.cancel();
+      if (hop >= MAX_REDIRECTS) throw new FeedUrlError('demasiadas redirecciones');
+      current = new URL(location, current).toString();
+    }
+  }
+
   private request(url: string, method: 'GET' | 'HEAD', signal: AbortSignal): Promise<Response> {
     return withRetry(
       async () => {
         await this.bucket.take(signal);
-        const response = await this.fetchImpl(url, {
-          method,
-          redirect: 'follow',
-          signal: AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs ?? 60_000)]),
-        });
+        const response = await this.fetchFollowing(url, method, signal);
         if (!response.ok) {
           await response.body?.cancel();
           throw new FeedHttpError(
@@ -99,7 +127,9 @@ export class FeedSource {
         retries: this.options.retries ?? 3,
         baseMs: this.options.retryBaseMs ?? 1000,
         signal,
-        shouldRetry: (error) => !(error instanceof FeedHttpError) || error.retryable,
+        shouldRetry: (error) =>
+          !(error instanceof FeedUrlError) &&
+          (!(error instanceof FeedHttpError) || error.retryable),
       },
     );
   }

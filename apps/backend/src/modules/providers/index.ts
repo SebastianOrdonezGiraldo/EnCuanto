@@ -15,10 +15,12 @@ export {
 export {
   FeedHttpError,
   FeedSource,
+  MAX_REDIRECTS,
   resolveFixturePath,
   type FeedSourceOptions,
 } from './feed-source';
 export { TokenBucket, backoffDelay, withRetry, type RetryOptions } from './rate-limit';
 export { rawOfferSchema, type RawOffer, type RawOfferInput } from './raw-offer';
+export { assertSafeFeedUrl, FeedUrlError, isPublicAddress, type HostLookup } from './url-guard';
 export { ProviderConfigError, createAdapter, type MerchantSource } from './registry';
 export type { ProviderAdapter, SourceType, SyncContext } from './types';

@@ -50,15 +50,16 @@ export async function enqueueSync(
 
 /**
  * Programa un sync periódico por comerciante (job schedulers de BullMQ, idempotente) y quita los
- * de comerciantes que ya no se sincronizan.
+ * de comerciantes que ya no se sincronizan. Con `everyMs <= 0` quita todos.
  */
 export async function scheduleSyncs(
   queue: Queue<SyncJobData>,
   merchantSlugs: readonly string[],
   everyMs: number,
 ): Promise<void> {
-  const wanted = new Set(merchantSlugs.map((slug) => `schedule-${slug}`));
-  for (const slug of merchantSlugs) {
+  const slugs = everyMs > 0 ? merchantSlugs : [];
+  const wanted = new Set(slugs.map((slug) => `schedule-${slug}`));
+  for (const slug of slugs) {
     await queue.upsertJobScheduler(
       `schedule-${slug}`,
       { every: everyMs },

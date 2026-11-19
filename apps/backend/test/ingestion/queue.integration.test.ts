@@ -81,5 +81,9 @@ describe.skipIf(!DATABASE_URL || !REDIS_URL)('cola de sync con BullMQ', () => {
     );
     await scheduleSyncs(queue, [slug], 60_000);
     expect((await queue.getJobSchedulers()).map((s) => s.key)).toEqual([`schedule-${slug}`]);
+
+    // SYNC_INTERVAL_MINUTES=0: se borran los que quedaron de antes.
+    await scheduleSyncs(queue, [slug], 0);
+    expect(await queue.getJobSchedulers()).toEqual([]);
   });
 });

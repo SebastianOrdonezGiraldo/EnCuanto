@@ -46,14 +46,12 @@ worker.on('failed', (job, err) =>
 );
 worker.on('error', (err) => log.error({ err: err.message }, 'worker: error'));
 
-if (config.SYNC_INTERVAL_MINUTES > 0) {
-  const slugs = (await listSyncableMerchants(db.db)).map((m) => m.slug);
-  await scheduleSyncs(queue, slugs, config.SYNC_INTERVAL_MINUTES * 60_000);
-  log.info(
-    { merchants: slugs.length, every_min: config.SYNC_INTERVAL_MINUTES },
-    'syncs programados',
-  );
-}
+// Siempre se reconcilia: con SYNC_INTERVAL_MINUTES=0 se borran los schedulers que hubieran
+// quedado en Redis de ejecuciones anteriores.
+const slugs =
+  config.SYNC_INTERVAL_MINUTES > 0 ? (await listSyncableMerchants(db.db)).map((m) => m.slug) : [];
+await scheduleSyncs(queue, slugs, config.SYNC_INTERVAL_MINUTES * 60_000);
+log.info({ merchants: slugs.length, every_min: config.SYNC_INTERVAL_MINUTES }, 'syncs programados');
 log.info({ concurrency: config.WORKER_CONCURRENCY }, 'worker listo');
 
 const shutdown = async (signal: string) => {

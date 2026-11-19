@@ -18,6 +18,41 @@ import { createAdapter, rawOfferSchema, type ProviderAdapter } from '../provider
 import { boundedPayload, recordHash, zodReason } from './quarantine';
 import { DROP_THRESHOLD, isCircuitOpen, recentItemsSeenAverage } from './runs.service';
 
+/**
+ * Campos de la oferta que, si cambian sin cambiar el precio, también modifican lo que ve el
+ * usuario (disponibilidad, título, enlace…) y por tanto invalidan la caché del catálogo.
+ */
+const CONTENT_FIELDS = [
+  'titleRaw',
+  'url',
+  'imageUrl',
+  'sellerName',
+  'isMarketplace',
+  'condition',
+  'availability',
+  'currency',
+  'gtin',
+  'brand',
+  'modelNumber',
+  'attributes',
+] as const;
+
+/** JSON con claves ordenadas: jsonb no conserva el orden de las claves. */
+function stable(value: unknown): string {
+  if (value === undefined || value === null) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
+  const obj = value as Record<string, unknown>;
+  return `{${Object.keys(obj)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${stable(obj[k])}`)
+    .join(',')}}`;
+}
+
+function contentDiffers(old: Record<string, unknown>, next: NewOffer): boolean {
+  return CONTENT_FIELDS.some((f) => stable(old[f]) !== stable(next[f]));
+}
+
 /** Tamaño de lote para upsert de ofertas y cuarentena. */
 export const BATCH_SIZE = 500;
 
@@ -44,6 +79,8 @@ export interface SyncResult {
   itemsUpserted: number;
   itemsInserted: number;
   itemsPriceChanged: number;
+  /** Ofertas existentes con otros cambios (disponibilidad, título, URL…) y el mismo precio. */
+  itemsContentChanged: number;
   itemsQuarantined: number;
   summary: SyncErrorSummary;
 }
@@ -90,6 +127,7 @@ export async function runSync(
       itemsUpserted: 0,
       itemsInserted: 0,
       itemsPriceChanged: 0,
+      itemsContentChanged: 0,
       itemsQuarantined: 0,
       summary,
     };
@@ -134,7 +172,14 @@ async function syncLocked(
     .returning({ id: providerSyncRuns.id });
   const runId = run!.id;
   const log = deps.log;
-  const counts = { seen: 0, upserted: 0, inserted: 0, priceChanged: 0, quarantined: 0 };
+  const counts = {
+    seen: 0,
+    upserted: 0,
+    inserted: 0,
+    priceChanged: 0,
+    contentChanged: 0,
+    quarantined: 0,
+  };
   const reasons: Record<string, number> = {};
   log.info({ merchant: merchantSlug, run_id: runId, trigger }, 'sync: inicio');
 
@@ -159,6 +204,7 @@ async function syncLocked(
         counts.upserted += r.upserted;
         counts.inserted += r.inserted;
         counts.priceChanged += r.priceChanged;
+        counts.contentChanged += r.contentChanged;
         batch = [];
       }
       if (quarantine.length > 0) {
@@ -202,7 +248,10 @@ async function syncLocked(
 
     await finishRun(deps.db, runId, 'succeeded', counts, summary);
     log.info({ merchant: merchantSlug, run_id: runId, ...counts }, 'sync: fin');
-    if (counts.inserted > 0 || counts.priceChanged > 0) await deps.onCatalogChanged?.();
+    // Cualquier cambio visible invalida la caché de búsqueda (§8.6), no solo el precio.
+    if (counts.inserted + counts.priceChanged + counts.contentChanged > 0) {
+      await deps.onCatalogChanged?.();
+    }
     return result(runId, merchantSlug, 'succeeded', counts, summary);
   } catch (error) {
     // Solo el mensaje del error, acotado: nunca el registro de la fuente ni URLs con tokens.
@@ -224,6 +273,7 @@ function result(
     upserted: number;
     inserted: number;
     priceChanged: number;
+    contentChanged: number;
     quarantined: number;
   },
   summary: SyncErrorSummary,
@@ -236,6 +286,7 @@ function result(
     itemsUpserted: c.upserted,
     itemsInserted: c.inserted,
     itemsPriceChanged: c.priceChanged,
+    itemsContentChanged: c.contentChanged,
     itemsQuarantined: c.quarantined,
     summary,
   };
@@ -317,7 +368,12 @@ async function writeOffers(client: DbClient, merchantId: string, rows: NewOffer[
   const unique = [...new Map(rows.map((r) => [r.externalId, r])).values()];
   return client.db.transaction(async (tx) => {
     const existing = await tx
-      .select({ externalId: offers.externalId, price: offers.price, listPrice: offers.listPrice })
+      .select({
+        externalId: offers.externalId,
+        price: offers.price,
+        listPrice: offers.listPrice,
+        ...Object.fromEntries(CONTENT_FIELDS.map((f) => [f, offers[f]])),
+      })
       .from(offers)
       .where(
         and(
@@ -365,16 +421,25 @@ async function writeOffers(client: DbClient, merchantId: string, rows: NewOffer[
 
     let inserted = 0;
     let priceChanged = 0;
+    let contentChanged = 0;
+    const incoming = new Map(unique.map((r) => [r.externalId, r]));
     const history: (typeof priceHistory.$inferInsert)[] = [];
     for (const row of written) {
       const old = before.get(row.externalId);
-      if (!old) inserted++;
-      else if (old.price !== row.price || old.listPrice !== row.listPrice) priceChanged++;
-      else continue;
+      if (!old) {
+        inserted++;
+      } else if (old.price !== row.price || old.listPrice !== row.listPrice) {
+        priceChanged++;
+      } else {
+        if (contentDiffers(old as Record<string, unknown>, incoming.get(row.externalId)!)) {
+          contentChanged++;
+        }
+        continue;
+      }
       history.push({ offerId: row.id, price: row.price, listPrice: row.listPrice });
     }
     if (history.length > 0) await tx.insert(priceHistory).values(history);
-    return { upserted: written.length, inserted, priceChanged };
+    return { upserted: written.length, inserted, priceChanged, contentChanged };
   });
 }
 

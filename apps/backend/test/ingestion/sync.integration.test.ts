@@ -213,6 +213,26 @@ describe.skipIf(!DATABASE_URL)('ingesta: operación de las fuentes (§9)', () =>
     expect(r.summary.alerts?.[0]).toMatch(/^items_seen_drop/);
   });
 
+  it('un cambio sin precio (disponibilidad) también invalida la caché del catálogo', async () => {
+    const slug = await merchant('contenido');
+    let availability = 'in_stock';
+    let changes = 0;
+    const deps: SyncDeps = {
+      db: ctx.client,
+      fixturesDir: ctx.fixturesDir,
+      log: silentLog,
+      onCatalogChanged: async () => void changes++,
+      adapterFor: (s) => fakeAdapter(s, () => [offer('C1', 100000, { availability })]),
+    };
+    await runSync(deps, slug);
+    await runSync(deps, slug);
+    expect(changes).toBe(1); // nada cambió en la segunda
+    availability = 'out_of_stock';
+    const r = await runSync(deps, slug);
+    expect(r).toMatchObject({ itemsPriceChanged: 0, itemsContentChanged: 1 });
+    expect(changes).toBe(2);
+  });
+
   it('comerciante inactivo: se omite', async () => {
     const slug = await merchant('inactivo');
     await ctx.client.db.update(merchants).set({ active: false }).where(eq(merchants.slug, slug));
