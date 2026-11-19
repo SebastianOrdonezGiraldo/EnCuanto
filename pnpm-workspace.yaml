@@ -5,3 +5,7 @@ packages:
 onlyBuiltDependencies:
   - esbuild
   - sharp
+
+# Binario nativo opcional de msgpackr (lo usa BullMQ); sin él usa la versión en JS.
+ignoredBuiltDependencies:
+  - msgpackr-extract
