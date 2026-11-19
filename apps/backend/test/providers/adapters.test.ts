@@ -2,6 +2,9 @@ import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import {
   createAdapter,
+  FeedSource,
+  FeedTooLargeError,
+  FixtureAdapter,
   mapGoogleRecord,
   ProviderConfigError,
   rawOfferSchema,
@@ -31,6 +34,17 @@ describe('FixtureAdapter', () => {
     expect(parsed[1]!.data).toMatchObject({ availability: 'out_of_stock', condition: 'new' });
     expect(parsed[2]!.data).toMatchObject({ condition: 'refurbished', availability: 'unknown' });
     await expect(adapter.healthCheck()).resolves.toEqual({ ok: true });
+  });
+
+  it('rechaza un JSON más grande que el límite sin cargarlo entero', async () => {
+    const adapter = new FixtureAdapter(
+      'x',
+      'manual',
+      'fixture:ejemplos/fixture-basico.json',
+      new FeedSource({ fixturesDir: FIXTURES_DIR }),
+      100,
+    );
+    await expect(collect(adapter.sync(ctx('x')))).rejects.toThrow(FeedTooLargeError);
   });
 
   it('healthCheck falla si el archivo no existe', async () => {

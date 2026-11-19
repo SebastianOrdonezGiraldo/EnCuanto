@@ -1,6 +1,6 @@
 /** Módulo `providers` (§9): adaptadores de fuentes autorizadas, registro y límites. */
 export { CsvFeedAdapter, readDelimited } from './adapters/csv';
-export { FixtureAdapter } from './adapters/fixture';
+export { FeedTooLargeError, FixtureAdapter, MAX_JSON_FEED_BYTES } from './adapters/fixture';
 export {
   GoogleMerchantFeedAdapter,
   mapGoogleRecord,
@@ -22,5 +22,6 @@ export {
 export { TokenBucket, backoffDelay, withRetry, type RetryOptions } from './rate-limit';
 export { rawOfferSchema, type RawOffer, type RawOfferInput } from './raw-offer';
 export { assertSafeFeedUrl, FeedUrlError, isPublicAddress, type HostLookup } from './url-guard';
+export { safeSyncErrorMessage } from './errors';
 export { ProviderConfigError, createAdapter, type MerchantSource } from './registry';
 export type { ProviderAdapter, SourceType, SyncContext } from './types';

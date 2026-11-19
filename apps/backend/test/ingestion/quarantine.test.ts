@@ -71,3 +71,20 @@ describe('boundedPayload y recordHash', () => {
     );
   });
 });
+
+describe('safeSyncErrorMessage', () => {
+  it('conserva los errores propios y oculta los de los parsers', async () => {
+    const { FeedHttpError, safeSyncErrorMessage } = await import(
+      '../../src/modules/providers/index'
+    );
+    expect(safeSyncErrorMessage(new FeedHttpError(503, true))).toBe('el feed respondió HTTP 503');
+    let parseError: unknown;
+    try {
+      JSON.parse('SECRETO {');
+    } catch (e) {
+      parseError = e;
+    }
+    expect(safeSyncErrorMessage(parseError)).toBe('error al leer o procesar el feed (SyntaxError)');
+    expect(safeSyncErrorMessage('texto')).toBe('error al leer o procesar el feed (string)');
+  });
+});

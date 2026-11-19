@@ -3,7 +3,7 @@ import { and, eq, inArray, like, sql } from 'drizzle-orm';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { writeSyntheticFeeds } from '../../src/dev/synthetic';
-import { runSync, type SyncDeps } from '../../src/modules/ingestion/index';
+import { listSyncRuns, runSync, type SyncDeps } from '../../src/modules/ingestion/index';
 import { upsertMerchant } from '../../src/modules/merchants/index';
 import { silentLog } from '../../src/shared/log';
 import { DATABASE_URL, fakeAdapter, offer, setupDb, type TestDb } from './helpers';
@@ -161,22 +161,87 @@ describe.skipIf(!DATABASE_URL)('ingesta: operación de las fuentes (§9)', () =>
     expect((await first).status).toBe('succeeded');
   });
 
-  it('duplicados del mismo external_id en un lote: vale el último', async () => {
+  it('external_id repetido en lotes distintos: vale el primero y el sync sigue idempotente', async () => {
     const slug = await merchant('dup');
+    // 600 registros: el duplicado cae en otro lote de 500, con otro precio.
+    const records = [
+      offer('A', 100000),
+      ...Array.from({ length: 598 }, (_, i) => offer(`R${i}`, 50000)),
+      offer('A', 90000),
+    ];
     const deps: SyncDeps = {
       db: ctx.client,
       fixturesDir: ctx.fixturesDir,
       log: silentLog,
-      adapterFor: (s) => fakeAdapter(s, () => [offer('A', 100000), offer('A', 90000)]),
+      adapterFor: (s) => fakeAdapter(s, () => records),
     };
-    const r = await runSync(deps, slug);
-    expect(r).toMatchObject({ status: 'succeeded', itemsSeen: 2, itemsInserted: 1 });
+    const first = await runSync(deps, slug);
+    expect(first).toMatchObject({
+      status: 'succeeded',
+      itemsSeen: 600,
+      itemsInserted: 599,
+      itemsQuarantined: 1,
+      summary: { quarantine_reasons: { duplicate_external_id: 1 } },
+    });
+    const second = await runSync(deps, slug);
+    expect(second).toMatchObject({ itemsInserted: 0, itemsPriceChanged: 0 });
     const rows = await ctx.client.db
       .select({ price: offers.price })
       .from(offers)
       .innerJoin(merchants, eq(merchants.id, offers.merchantId))
+      .where(and(eq(merchants.slug, slug), eq(offers.externalId, 'A')));
+    expect(rows).toEqual([{ price: 100000 }]);
+  });
+
+  it('cuarentena: occurrences cuenta ejecuciones, no apariciones dentro de una', async () => {
+    const slug = await merchant('cuarentena');
+    const bad = { externalId: 'X', title: 'sin url', price: 1000 };
+    const deps: SyncDeps = {
+      db: ctx.client,
+      fixturesDir: ctx.fixturesDir,
+      log: silentLog,
+      adapterFor: (s) => fakeAdapter(s, () => [bad, ...Array.from({ length: 600 }, () => bad)]),
+    };
+    expect((await runSync(deps, slug)).itemsQuarantined).toBe(601);
+    await runSync(deps, slug);
+    const rows = await ctx.client.db
+      .select({ occurrences: quarantinedRecords.occurrences })
+      .from(quarantinedRecords)
+      .innerJoin(merchants, eq(merchants.id, quarantinedRecords.merchantId))
       .where(eq(merchants.slug, slug));
-    expect(rows).toEqual([{ price: 90000 }]);
+    expect(rows).toEqual([{ occurrences: 2 }]);
+  });
+
+  it('un fallo al invalidar la caché no marca el sync como fallido', async () => {
+    const slug = await merchant('cache');
+    const deps: SyncDeps = {
+      db: ctx.client,
+      fixturesDir: ctx.fixturesDir,
+      log: silentLog,
+      onCatalogChanged: async () => {
+        throw new Error('redis caído');
+      },
+      adapterFor: (s) => fakeAdapter(s, () => [offer('K1', 100000)]),
+    };
+    await expect(runSync(deps, slug)).resolves.toMatchObject({ status: 'succeeded' });
+  });
+
+  it('el error de un parser no se guarda con los bytes del feed', async () => {
+    const slug = await merchant('parser');
+    const deps: SyncDeps = {
+      db: ctx.client,
+      fixturesDir: ctx.fixturesDir,
+      log: silentLog,
+      adapterFor: (s) =>
+        fakeAdapter(s, () => {
+          JSON.parse('SECRET_TOKEN_123 no es json');
+          return [];
+        }),
+    };
+    await expect(runSync(deps, slug)).rejects.toThrow();
+    const [run] = await listSyncRuns(ctx.client.db, { merchantSlug: slug, limit: 1 });
+    expect(run!.errorSummary.error).toBe('error al leer o procesar el feed (SyntaxError)');
+    expect(JSON.stringify(run)).not.toContain('SECRET_TOKEN');
   });
 
   it('circuit breaker: tras 5 fallos seguidos se pausa', async () => {

@@ -14,7 +14,12 @@ import { NotFoundError } from '../../shared/errors';
 import { loadBrandNames } from '../catalog/index';
 import { getMerchantBySlug } from '../merchants/index';
 import { buildBrandDictionary, normalizeOffer, type BrandDictionary } from '../normalization/index';
-import { createAdapter, rawOfferSchema, type ProviderAdapter } from '../providers/index';
+import {
+  createAdapter,
+  rawOfferSchema,
+  safeSyncErrorMessage,
+  type ProviderAdapter,
+} from '../providers/index';
 import { boundedPayload, recordHash, zodReason } from './quarantine';
 import { DROP_THRESHOLD, isCircuitOpen, recentItemsSeenAverage } from './runs.service';
 
@@ -213,14 +218,28 @@ async function syncLocked(
       }
     };
 
+    // Deduplicación de toda la ejecución, no solo del lote: así el resultado no depende del
+    // orden del feed ni de BATCH_SIZE. Un external_id repetido es una anomalía de la fuente:
+    // vale la primera aparición y las demás van a cuarentena. `occurrences` cuenta ejecuciones.
+    const seenIds = new Set<string>();
+    const seenHashes = new Set<string>();
+    const toQuarantine = (entry: PendingQuarantine) => {
+      counts.quarantined++;
+      reasons[entry.reason] = (reasons[entry.reason] ?? 0) + 1;
+      if (seenHashes.has(entry.hash)) return;
+      seenHashes.add(entry.hash);
+      quarantine.push(entry);
+    };
+
     for await (const record of adapter.sync({ merchantSlug, signal })) {
       counts.seen++;
       const entry = toOfferOrQuarantine(record, merchantId, brands);
       if ('reason' in entry) {
-        counts.quarantined++;
-        reasons[entry.reason] = (reasons[entry.reason] ?? 0) + 1;
-        quarantine.push(entry);
+        toQuarantine(entry);
+      } else if (seenIds.has(entry.externalId)) {
+        toQuarantine(quarantined(record, 'duplicate_external_id'));
       } else {
+        seenIds.add(entry.externalId);
         batch.push(entry);
       }
       if (batch.length >= BATCH_SIZE || quarantine.length >= BATCH_SIZE) await flush();
@@ -249,13 +268,23 @@ async function syncLocked(
     await finishRun(deps.db, runId, 'succeeded', counts, summary);
     log.info({ merchant: merchantSlug, run_id: runId, ...counts }, 'sync: fin');
     // Cualquier cambio visible invalida la caché de búsqueda (§8.6), no solo el precio.
+    // Un fallo de la caché no convierte en fallido un sync ya guardado.
     if (counts.inserted + counts.priceChanged + counts.contentChanged > 0) {
-      await deps.onCatalogChanged?.();
+      await deps.onCatalogChanged?.().catch((error: unknown) =>
+        log.warn(
+          {
+            merchant: merchantSlug,
+            run_id: runId,
+            err: error instanceof Error ? error.message : 'error desconocido',
+          },
+          'sync: no se pudo invalidar la caché del catálogo',
+        ),
+      );
     }
     return result(runId, merchantSlug, 'succeeded', counts, summary);
   } catch (error) {
-    // Solo el mensaje del error, acotado: nunca el registro de la fuente ni URLs con tokens.
-    const message = error instanceof Error ? error.message.slice(0, 500) : 'error desconocido';
+    // Mensaje saneado: nunca bytes del feed (los parsers los citan) ni URLs con tokens.
+    const message = safeSyncErrorMessage(error).slice(0, 500);
     const summary: SyncErrorSummary = { error: message };
     if (Object.keys(reasons).length > 0) summary.quarantine_reasons = reasons;
     await finishRun(deps.db, runId, 'failed', counts, summary);
@@ -313,16 +342,18 @@ async function finishRun(
     .where(eq(providerSyncRuns.id, runId));
 }
 
+function quarantined(record: unknown, reason: string): PendingQuarantine {
+  const payload = boundedPayload(record);
+  return { payload, hash: recordHash(payload), reason };
+}
+
 /** Valida y normaliza un registro; si no sirve, devuelve lo que va a cuarentena. */
 export function toOfferOrQuarantine(
   record: unknown,
   merchantId: string,
   brands: BrandDictionary,
 ): NewOffer | PendingQuarantine {
-  const quarantine = (reason: string): PendingQuarantine => {
-    const payload = boundedPayload(record);
-    return { payload, hash: recordHash(payload), reason };
-  };
+  const quarantine = (reason: string) => quarantined(record, reason);
   const parsed = rawOfferSchema.safeParse(record);
   if (!parsed.success) return quarantine(zodReason(parsed.error));
   const raw = parsed.data;
@@ -364,7 +395,7 @@ export function toOfferOrQuarantine(
  * El advisory lock garantiza que nadie más escribe ofertas de este comerciante a la vez.
  */
 async function writeOffers(client: DbClient, merchantId: string, rows: NewOffer[]) {
-  // Si la fuente repite un external_id en el lote, vale el último (ON CONFLICT no admite duplicados).
+  // Defensa: runSync ya descarta external_id repetidos, y ON CONFLICT no admite duplicados.
   const unique = [...new Map(rows.map((r) => [r.externalId, r])).values()];
   return client.db.transaction(async (tx) => {
     const existing = await tx
