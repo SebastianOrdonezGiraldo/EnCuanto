@@ -6,5 +6,8 @@ export function createRedis(url: string): Redis {
     lazyConnect: true,
     maxRetriesPerRequest: 1,
     enableOfflineQueue: false,
+    // Límites del driver para que una sonda colgada no se quede abierta.
+    connectTimeout: 2000,
+    commandTimeout: 2000,
   });
 }

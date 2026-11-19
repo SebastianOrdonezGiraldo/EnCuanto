@@ -19,7 +19,7 @@ describe.skipIf(!DATABASE_URL || !REDIS_URL)('GET /health con BD y Redis reales'
     await redis.connect();
     const app = buildApp({
       health: {
-        pingDatabase: () => db.ping(),
+        pingDatabase: (signal) => db.ping(signal),
         pingRedis: async () => void (await redis.ping()),
         version: 'test',
         startedAt: Date.now(),

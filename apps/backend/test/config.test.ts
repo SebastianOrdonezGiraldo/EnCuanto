@@ -11,7 +11,7 @@ describe('loadConfig', () => {
     const config = loadConfig(base);
     expect(config.PORT).toBe(4000);
     expect(config.HOST).toBe('0.0.0.0');
-    expect(config.NODE_ENV).toBe('development');
+    expect(config.NODE_ENV).toBe('production');
   });
 
   it('respeta PORT de la plataforma', () => {

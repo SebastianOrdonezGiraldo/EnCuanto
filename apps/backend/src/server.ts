@@ -13,7 +13,7 @@ const redis = createRedis(config.REDIS_URL);
 const app = buildApp(
   {
     health: {
-      pingDatabase: () => db.ping(),
+      pingDatabase: (signal) => db.ping(signal),
       pingRedis: async () => {
         if (redis.status === 'wait' || redis.status === 'end') await redis.connect();
         await redis.ping();
