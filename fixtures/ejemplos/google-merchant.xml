@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">
+  <channel>
+    <title>Electro Pacífico (sintético)</title>
+    <link>https://electro-pacifico.example</link>
+    <item>
+      <g:id>EP-100</g:id>
+      <title><![CDATA[Lavadora Zenkai 19 Kg Carga Superior & Blanca]]></title>
+      <link>https://electro-pacifico.example/p/EP-100</link>
+      <g:image_link>https://electro-pacifico.example/img/EP-100.jpg</g:image_link>
+      <g:price>2499900.00 COP</g:price>
+      <g:sale_price>1999900.00 COP</g:sale_price>
+      <g:gtin>2000000000046</g:gtin>
+      <g:brand>Zenkai</g:brand>
+      <g:availability>in stock</g:availability>
+      <g:condition>new</g:condition>
+      <g:shipping>
+        <g:country>CO</g:country>
+        <g:price>0 COP</g:price>
+      </g:shipping>
+    </item>
+    <item>
+      <g:id>EP-101</g:id>
+      <title>Monitor Lumbra 27&quot; IPS LM-27Q</title>
+      <link>https://electro-pacifico.example/p/EP-101</link>
+      <g:price>899900 COP</g:price>
+      <g:brand>Lumbra</g:brand>
+      <g:availability>out of stock</g:availability>
+    </item>
+    <item>
+      <g:id>EP-102</g:id>
+      <title>Producto en dólares</title>
+      <link>https://electro-pacifico.example/p/EP-102</link>
+      <g:price>199.99 USD</g:price>
+    </item>
+  </channel>
+</rss>
