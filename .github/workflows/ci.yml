@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: Lint, typecheck, test y build
+  linux:
+    name: Linux (lint, typecheck, tests con Postgres y Redis, build)
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -53,5 +53,26 @@ jobs:
       - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm db:migrate
+      - run: pnpm test
+      - run: pnpm build
+
+  windows:
+    name: Windows (lint, typecheck, tests unitarios y build)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    # Sin Postgres ni Redis: los tests de integración se omiten aquí y corren en el job de Linux.
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build

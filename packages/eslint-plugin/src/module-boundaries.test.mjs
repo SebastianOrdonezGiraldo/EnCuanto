@@ -6,7 +6,8 @@ import { moduleBoundaries } from './module-boundaries.mjs';
 RuleTester.describe = describe;
 RuleTester.it = it;
 
-const cwd = '/repo';
+// Raíz absoluta nativa (con unidad de disco en Windows): ESLint exige rutas absolutas.
+const cwd = path.resolve('repo');
 const mod = (p) => path.join(cwd, 'apps/backend/src/modules', p);
 const src = (p) => path.join(cwd, 'apps/backend/src', p);
 
