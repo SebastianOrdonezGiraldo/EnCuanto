@@ -25,3 +25,8 @@ export class RateLimitError extends DomainError {
   readonly statusCode = 429;
   readonly code = 'rate_limited';
 }
+
+export class UnauthorizedError extends DomainError {
+  readonly statusCode = 401;
+  readonly code = 'unauthorized';
+}

@@ -8,6 +8,17 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(4000),
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),
+  // Ingesta (H1).
+  /** Directorio de los feeds `fixture:` (sintéticos). Por defecto, <raíz del repo>/fixtures. */
+  FIXTURES_DIR: z.string().min(1).optional(),
+  /** Cada cuántos minutos se sincroniza cada comerciante. 0 desactiva la programación. */
+  SYNC_INTERVAL_MINUTES: z.coerce.number().int().min(0).max(10_080).default(360),
+  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(2),
+  /**
+   * Token del admin mínimo (H1), hasta que haya usuarios (H4). Sin él, las rutas /api/admin
+   * no se registran. Mínimo 32 caracteres.
+   */
+  ADMIN_TOKEN: z.string().min(32).optional(),
 });
 
 export type Config = z.infer<typeof envSchema>;

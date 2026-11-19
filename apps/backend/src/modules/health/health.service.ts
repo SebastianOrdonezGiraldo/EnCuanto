@@ -41,7 +41,7 @@ async function check(
   }
 }
 
-/** Comprueba BD y Redis en paralelo. Las colas (BullMQ) se añaden en H1. */
+/** Comprueba BD y Redis en paralelo. BullMQ usa el mismo Redis; el estado de la cola está en el admin. */
 export async function getHealth(deps: HealthDeps): Promise<HealthResponse> {
   const timeoutMs = deps.timeoutMs ?? 2000;
   const [database, redis] = await Promise.all([
