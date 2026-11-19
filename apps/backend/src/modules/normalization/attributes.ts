@@ -7,9 +7,20 @@ import type { VariantAttributes } from '@encuanto/db';
  * capacidades sin la palabra "ram" (`256gb/8gb`).
  */
 
+/** Tecnología de memoria entre la capacidad y la palabra RAM: `ram ddr4 16gb`, `16gb ddr5`. */
+const DDR = String.raw`(?:lp)?ddr\d+x?`;
 const RAM_PATTERNS = [
-  /\b(\d{1,3})\s?gb\s?(?:de\s)?(?:memoria\s)?ram\b/g,
-  /\bram\s?(?:de\s)?(\d{1,3})\s?gb\b/g,
+  new RegExp(String.raw`\b(\d{1,3})\s?gb\s?(?:de\s)?(?:memoria\s)?(?:${DDR}\s?)?ram\b`, 'g'),
+  new RegExp(String.raw`\bram\s?(?:de\s)?(?:${DDR}\s?)?(\d{1,3})\s?gb\b`, 'g'),
+];
+/**
+ * Sin la palabra RAM, una tecnología DDR pegada a la capacidad también identifica RAM. Solo se
+ * aplica si no se encontró RAM explícita: en "16gb ram 512gb ddr5" el 512 no es RAM. Primero
+ * "16gb ddr5" (lo habitual): en "16gb ddr5 512gb ssd" la DDR ya queda consumida y el 512 no es RAM.
+ */
+const DDR_PATTERNS = [
+  new RegExp(String.raw`\b(\d{1,3})\s?gb\s?${DDR}\b`, 'g'),
+  new RegExp(String.raw`\b${DDR}\s?(\d{1,3})\s?gb\b`, 'g'),
 ];
 /** `8+256gb`, `8gb+256gb`: RAM + almacenamiento, habitual en celulares. */
 const RAM_PLUS_STORAGE = /\b(\d{1,2})\s?(?:gb)?\s?\+\s?(\d{2,4})\s?(gb|tb)\b/;
@@ -80,13 +91,15 @@ export function extractAttributes(text: string): ExtractedAttributes {
   const matched: string[] = [];
   let rest = text;
 
-  for (const pattern of RAM_PATTERNS) {
+  const takeRam = (pattern: RegExp) => {
     rest = rest.replace(pattern, (m: string, gb: string) => {
       attributes.ram_gb ??= Number(gb);
       matched.push(m);
       return ' ';
     });
-  }
+  };
+  RAM_PATTERNS.forEach(takeRam);
+  if (attributes.ram_gb === undefined) DDR_PATTERNS.forEach(takeRam);
 
   const plus = RAM_PLUS_STORAGE.exec(rest);
   if (plus && attributes.ram_gb === undefined) {

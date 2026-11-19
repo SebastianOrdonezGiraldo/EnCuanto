@@ -98,6 +98,23 @@ describe('CsvFeedAdapter', () => {
     expect(rawOfferSchema.safeParse(records[3]).success).toBe(false);
   });
 
+  it('un error del origen a mitad de lectura rechaza la iteración (no tumba el proceso)', async () => {
+    const source = new Readable({ read() {} });
+    source.push('id,titulo\nA-1,Uno\nA-2,Dos\n');
+    const rows: unknown[] = [];
+    await expect(
+      (async () => {
+        for await (const row of readDelimited(source, ',', signal)) {
+          rows.push(row);
+          // La conexión se corta cuando ya llegó la primera fila.
+          if (rows.length === 1) source.destroy(new Error('conexión cortada'));
+        }
+      })(),
+    ).rejects.toThrow('conexión cortada');
+    expect(rows[0]).toEqual({ id: 'A-1', titulo: 'Uno' });
+    expect(source.destroyed).toBe(true);
+  });
+
   it('lee CRLF (archivos de Windows) igual que LF', async () => {
     const crlf = 'id,titulo\r\nA-1,"Uno"\r\nA-2,Dos\r\n';
     const rows = await collect(readDelimited(Readable.from([crlf]), ',', signal));
@@ -167,6 +184,25 @@ describe('GoogleMerchantFeedAdapter', () => {
 <!DOCTYPE rss [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
 <rss xmlns:g="http://base.google.com/ns/1.0"><channel><item><g:id>1</g:id><title>&xxe;</title></item></channel></rss>`;
     await expect(collect(readGoogleXml(Readable.from([xml]), signal))).rejects.toThrow();
+  });
+
+  it.each([
+    [{ price: '1000 USD', sale_price: '900 COP' }, false],
+    [{ price: '1000 COP', sale_price: '900 USD' }, false],
+    [{ price: '1000 EUR' }, false],
+    [{ price: '1000 COP', sale_price: '900 COP' }, true],
+    [{ price: '1000', sale_price: '900 COP' }, true],
+    [{ price: '1000' }, true],
+  ])('monedas de Google Merchant %j → válida: %s', (prices, valid) => {
+    const record = mapGoogleRecord({
+      id: '1',
+      title: 'Producto',
+      link: 'https://t.example/p/1',
+      ...prices,
+    });
+    const parsed = rawOfferSchema.safeParse(record);
+    expect(parsed.success).toBe(valid);
+    if (!valid) expect(parsed.error!.issues[0]!.path).toEqual(['currency']);
   });
 
   it('mapGoogleRecord sin sale_price usa price como precio', () => {

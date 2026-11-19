@@ -82,11 +82,18 @@ function splitPrice(value: string | undefined): { amount?: string; currency?: st
 /**
  * Traduce un registro de Google Merchant a `RawOffer`. En ese formato `price` es el precio
  * normal y `sale_price` el de oferta: si hay `sale_price`, ese es el precio y `price` el de lista.
+ *
+ * Las monedas explícitas de los dos importes se comprueban antes de descartarlas: si difieren
+ * (p. ej. `1000 USD` y `900 COP`), `currency` queda como `USD/COP`, que no es COP, y el
+ * registro va a cuarentena en vez de mezclar importes de monedas distintas.
  */
 export function mapGoogleRecord(rec: Record<string, string>): RawOfferInput {
   const regular = splitPrice(rec.price);
   const sale = splitPrice(rec.sale_price);
   const hasSale = Boolean(sale.amount);
+  const currencies = [
+    ...new Set([regular.currency, hasSale ? sale.currency : undefined].filter(Boolean)),
+  ];
   return {
     externalId: rec.id,
     title: rec.title,
@@ -94,7 +101,7 @@ export function mapGoogleRecord(rec: Record<string, string>): RawOfferInput {
     imageUrl: rec.image_link,
     price: hasSale ? sale.amount : regular.amount,
     listPrice: hasSale ? regular.amount : undefined,
-    currency: (hasSale ? sale.currency : undefined) ?? regular.currency,
+    currency: currencies.length > 0 ? currencies.join('/') : undefined,
     gtin: rec.gtin,
     brand: rec.brand,
     category: rec.product_type ?? rec.google_product_category,
