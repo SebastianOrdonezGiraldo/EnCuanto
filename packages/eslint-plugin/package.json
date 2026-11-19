@@ -1,0 +1,15 @@
+{
+  "name": "@encuanto/eslint-plugin",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Reglas de ESLint propias del monorepo",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "scripts": {
+    "build": "echo 'sin build'",
+    "typecheck": "echo 'sin TypeScript'",
+    "test": "vitest run"
+  }
+}
