@@ -7,7 +7,7 @@ import {
   type Database,
   type VariantAttributes,
 } from '@encuanto/db';
-import { inArray, sql } from 'drizzle-orm';
+import { and, inArray, isNull, sql } from 'drizzle-orm';
 import { brandKey } from '../normalization/index';
 
 /** Variante de una ficha que se quiere registrar. `key` la identifica en el resultado. */
@@ -70,28 +70,29 @@ export async function upsertCatalog(
   const variantIds = new Map<string, string>();
   if (entries.length === 0) return variantIds;
 
-  // 1. Categorías por slug.
-  const categoryValues = [
-    ...new Map(
-      entries.map((e) => [
-        slugify(e.category.name),
-        {
-          slug: slugify(e.category.name),
-          name: e.category.name,
-          accessory: !!e.category.accessory,
-        },
-      ]),
-    ).values(),
+  // 1. Categorías por slug. `accessory` solo se cambia si la entrada lo indica: omitirlo no
+  // debe quitarle a una categoría existente la penalización de accesorio (§8.3).
+  const categoryInputs = [
+    ...new Map(entries.map((e) => [slugify(e.category.name), e.category])).entries(),
   ];
-  const categoryRows = await db
-    .insert(categories)
-    .values(categoryValues)
-    .onConflictDoUpdate({
-      target: categories.slug,
-      set: { name: sql`excluded.name`, accessory: sql`excluded.accessory` },
-    })
-    .returning({ id: categories.id, slug: categories.slug });
-  const categoryId = new Map(categoryRows.map((r) => [r.slug, r.id]));
+  const categoryId = new Map<string, string>();
+  for (const withFlag of [true, false]) {
+    const values = categoryInputs
+      .filter(([, c]) => (c.accessory !== undefined) === withFlag)
+      .map(([slug, c]) => ({ slug, name: c.name, accessory: !!c.accessory }));
+    if (values.length === 0) continue;
+    const rows = await db
+      .insert(categories)
+      .values(values)
+      .onConflictDoUpdate({
+        target: categories.slug,
+        set: withFlag
+          ? { name: sql`excluded.name`, accessory: sql`excluded.accessory` }
+          : { name: sql`excluded.name` },
+      })
+      .returning({ id: categories.id, slug: categories.slug });
+    for (const r of rows) categoryId.set(r.slug, r.id);
+  }
 
   // 2. Marcas por nombre normalizado.
   const brandNames = [...new Set(entries.map((e) => e.brand).filter((b): b is string => !!b))];
@@ -124,9 +125,24 @@ export async function upsertCatalog(
       key: productKey(b, c, e.canonicalName, e.modelNumber),
     };
   });
+  // Se buscan por la misma identidad que define `productKey`: el modelo si lo hay (aunque el
+  // nombre haya cambiado) o el nombre sin distinguir mayúsculas.
   const productId = new Map<string, string>();
-  const names = [...new Set(resolved.map((r) => r.entry.canonicalName))];
-  for (const part of chunks(names)) {
+  const models = [
+    ...new Set(resolved.map((r) => r.entry.modelNumber).filter((m): m is string => !!m)),
+  ];
+  const names = [
+    ...new Set(
+      resolved.filter((r) => !r.entry.modelNumber).map((r) => r.entry.canonicalName.toLowerCase()),
+    ),
+  ];
+  const lookups = [
+    ...chunks(models).map((part) => inArray(products.modelNumber, part)),
+    ...chunks(names).map((part) =>
+      and(isNull(products.modelNumber), inArray(sql`lower(${products.canonicalName})`, part)),
+    ),
+  ];
+  for (const where of lookups) {
     const rows = await db
       .select({
         id: products.id,
@@ -136,7 +152,7 @@ export async function upsertCatalog(
         model: products.modelNumber,
       })
       .from(products)
-      .where(inArray(products.canonicalName, part));
+      .where(where);
     for (const r of rows) productId.set(productKey(r.brandId, r.categoryId, r.name, r.model), r.id);
   }
   const missing = [

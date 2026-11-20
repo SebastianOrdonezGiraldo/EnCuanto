@@ -60,12 +60,24 @@ describe.skipIf(!DATABASE_URL)('búsqueda y /go (H2)', () => {
         modelNumber: 'FU-1001',
         variants: [{ key: 'funda', gtin: null, attributes: {} }],
       },
+      // La marca solo está en `brands`, no en el nombre.
+      {
+        category: { name: 'Celulares' },
+        brand: 'Orvalia',
+        canonicalName: 'Teléfono Z9',
+        modelNumber: 'OR-Z9',
+        variants: [{ key: 'z9', gtin: null, attributes: {} }],
+      },
     ]);
     await client.sql`
       insert into offers (merchant_id, external_id, title_raw, url, price, availability)
       values (${merchantId}, 'ACC-1', 'Funda para celular Kalora Nova', 'https://tienda-aurora.example/p/ACC-1', 19900, 'in_stock')`;
+    await client.sql`
+      insert into offers (merchant_id, external_id, title_raw, url, price, availability)
+      values (${merchantId}, 'ORV-1', 'Telefono Z9 Orvalia', 'https://tienda-aurora.example/p/ORV-1', 899000, 'in_stock')`;
     await assignVariants(client.db, [
       { merchantId, externalId: 'ACC-1', variantId: variantIds.get('funda')! },
+      { merchantId, externalId: 'ORV-1', variantId: variantIds.get('z9')! },
     ]);
 
     const log = { info() {}, warn() {}, error() {} };
@@ -154,6 +166,12 @@ describe.skipIf(!DATABASE_URL)('búsqueda y /go (H2)', () => {
       select model_number, canonical_name from products where model_number is not null limit 1`;
     const byModel = await search(`q=${encodeURIComponent(p!.model_number)}`);
     expect(byModel.body.results[0].name).toBe(p!.canonical_name);
+  });
+
+  it('encuentra por la marca aunque no esté en el nombre del producto', async () => {
+    const { body } = await search('q=orvalia');
+    expect(body.normalized.brand).toBe('orvalia');
+    expect(body.results.map((r: { name: string }) => r.name)).toEqual(['Teléfono Z9']);
   });
 
   it('penaliza los accesorios salvo que se busquen (§8.3)', async () => {
@@ -331,10 +349,20 @@ describe.skipIf(!DATABASE_URL)('búsqueda y /go (H2)', () => {
   it('guarda la consulta en search_queries sin datos personales y no la escribe en los logs', async () => {
     const q = 'nevera para ana.gomez@correo.example 3105551234';
     await search(`q=${encodeURIComponent(q)}`);
+    // Filtros con texto libre: solo se guardan las marcas y tiendas que existen.
+    const { res } = await search(
+      `q=tv&brands=${encodeURIComponent('ana.gomez@correo.example')},Kalora` +
+        '&merchants=tienda-aurora,ana-gomez-correo',
+    );
+    expect(res.statusCode).toBe(200);
     await new Promise((r) => setTimeout(r, 200));
     const rows = await client.db.select().from(searchQueries);
     const stored = rows.map((r) => r.qNormalized);
     expect(stored).toContain('nevera para [email] [numero]');
+    expect(rows.map((r) => r.filters)).toContainEqual(
+      expect.objectContaining({ brands: ['kalora'], merchants: ['tienda-aurora'] }),
+    );
+    expect(JSON.stringify(rows)).not.toContain('gomez');
     expect(JSON.stringify(rows)).not.toContain('correo');
     expect(JSON.stringify(rows)).not.toContain('3105551234');
 

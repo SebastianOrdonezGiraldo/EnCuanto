@@ -18,12 +18,7 @@ import { brandKey, buildBrandDictionary, type BrandDictionary } from '../normali
 import { cacheKey, type CachedListing, type ListingCache } from './cache';
 import { parseQuery } from './query';
 import { logSearchQuery } from './query-log';
-import {
-  discountPct,
-  rankListing,
-  type ListingFilters,
-  type RankOptions,
-} from './rank';
+import { discountPct, rankListing, type ListingFilters, type RankOptions } from './rank';
 import {
   findListing,
   type ListingSource,
@@ -32,6 +27,7 @@ import {
   hydrate,
   listActiveMerchants,
   listCategoriesWithProducts,
+  listMerchantSlugs,
 } from './search.repository';
 
 export interface SearchWeights {
@@ -60,7 +56,11 @@ type ListingPage = Pick<
 >;
 
 export class SearchService {
-  private brands: { dict: BrandDictionary; loadedAt: number } | null = null;
+  private dictionaries: {
+    brands: BrandDictionary;
+    merchants: ReadonlySet<string>;
+    loadedAt: number;
+  } | null = null;
 
   constructor(private readonly deps: SearchDeps) {}
 
@@ -68,31 +68,52 @@ export class SearchService {
     return this.deps.now?.() ?? new Date();
   }
 
-  private async brandDictionary(): Promise<BrandDictionary> {
-    if (!this.brands || Date.now() - this.brands.loadedAt > BRANDS_TTL_MS) {
-      const dict = buildBrandDictionary(await loadBrandNames(this.deps.client.db));
-      this.brands = { dict, loadedAt: Date.now() };
+  /** Marcas y tiendas conocidas: para interpretar la consulta y para no registrar texto libre. */
+  private async catalogTerms(): Promise<{
+    brands: BrandDictionary;
+    merchants: ReadonlySet<string>;
+  }> {
+    if (!this.dictionaries || Date.now() - this.dictionaries.loadedAt > BRANDS_TTL_MS) {
+      const [brandNames, merchantSlugs] = await Promise.all([
+        loadBrandNames(this.deps.client.db),
+        listMerchantSlugs(this.deps.client.sql),
+      ]);
+      this.dictionaries = {
+        brands: buildBrandDictionary(brandNames),
+        merchants: new Set(merchantSlugs),
+        loadedAt: Date.now(),
+      };
     }
-    return this.brands.dict;
+    return this.dictionaries;
   }
 
   /** GET /api/search (§7, §8.3, §8.6). */
   async search(query: SearchQuery): Promise<SearchResponse> {
     const started = performance.now();
-    const parsed = parseQuery(query.q, await this.brandDictionary());
+    const terms = await this.catalogTerms();
+    const parsed = parseQuery(query.q, terms.brands);
     const filters = toFilters(query);
+    const { weights } = this.deps;
     const { listing, hit } = await this.cached(
       'search',
-      { q: parsed.normalized, f: filters, s: query.sort },
+      // Los pesos entran en la identidad: cambiarlos no debe servir órdenes calculados con otros.
+      {
+        q: parsed.normalized,
+        b: parsed.brand,
+        w: [weights.text, weights.trgm],
+        f: filters,
+        s: query.sort,
+      },
       async () => {
         const source = {
           kind: 'text' as const,
           input: {
             tsquery: parsed.tsquery,
             normalized: parsed.normalized,
+            brand: parsed.brand,
             accessory: parsed.accessory,
-            wText: this.deps.weights.text,
-            wTrgm: this.deps.weights.trgm,
+            wText: weights.text,
+            wTrgm: weights.trgm,
           },
         };
         return this.rank(source, filters, { mode: 'text', sort: query.sort });
@@ -103,7 +124,7 @@ export class SearchService {
     if (this.deps.logQueries !== false) {
       logSearchQuery(this.deps.client.db, this.deps.log, {
         query: query.q,
-        filters: filtersForLog(query),
+        filters: filtersForLog(query, terms),
         resultsCount: page.total,
         latencyMs: performance.now() - started,
       });
@@ -275,11 +296,21 @@ function toFilters(query: ListingQuery): ListingFilters {
   };
 }
 
-/** Filtros que se guardan en `search_queries`: solo valores del catálogo, nada del usuario. */
-function filtersForLog(query: SearchQuery): Record<string, unknown> {
+/**
+ * Filtros que se guardan en `search_queries`: solo valores del catálogo. Las tiendas y marcas
+ * que no existen se descartan, porque son texto libre del usuario (podrían ser un correo).
+ */
+export function filtersForLog(
+  query: SearchQuery,
+  known: { brands: BrandDictionary; merchants: ReadonlySet<string> },
+): Record<string, unknown> {
   const out: Record<string, unknown> = { sort: query.sort, page: query.page };
-  if (query.merchants?.length) out.merchants = query.merchants;
-  if (query.brands?.length) out.brands = query.brands.map(brandKey);
+  const merchants = query.merchants?.filter((m) => known.merchants.has(m));
+  if (merchants?.length) out.merchants = merchants;
+  const brands = query.brands
+    ?.map((b) => known.brands.get(brandKey(b)))
+    .filter((b): b is string => !!b);
+  if (brands?.length) out.brands = [...new Set(brands)];
   if (query.min_price !== undefined) out.min_price = query.min_price;
   if (query.max_price !== undefined) out.max_price = query.max_price;
   if (query.discount_only) out.discount_only = true;

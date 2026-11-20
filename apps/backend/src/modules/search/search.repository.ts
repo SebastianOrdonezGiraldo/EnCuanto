@@ -12,6 +12,8 @@ export const ACCESSORY_PENALTY = 0.5;
 export interface TextCandidatesInput {
   tsquery: string | null;
   normalized: string;
+  /** Marca reconocida en la consulta (`brands.normalized_name`), o null. */
+  brand: string | null;
   accessory: boolean;
   wText: number;
   wTrgm: number;
@@ -52,10 +54,14 @@ const liveOffer = (sql: Sql) => sql`
  * en una sola consulta. La agregación por tienda reduce las filas que viajan a Node (y el trabajo
  * del ranking) a ~productos × tiendas; `groupOffers` en rank.ts es su equivalente en TypeScript.
  *
- * Texto (§8.3): entran por FTS en español (índice GIN de `search_tsv`) o por similitud de
- * palabra con trigramas (`<%`, índice GIN sobre el nombre sin tildes), y puntúan
+ * Texto (§8.3): entran por FTS en español (índice GIN de `search_tsv`), por similitud de
+ * palabra con trigramas (`<%`, índice GIN sobre el nombre sin tildes) o, si la consulta nombra
+ * una marca conocida, por ser de esa marca (la marca vive en `brands`, no siempre en el nombre).
+ * Puntúan
  *
- *   ts_rank_cd(search_tsv, query)·w_text + similarity(nombre, q)·w_trgm − penalización de accesorio
+ *   ts_rank_cd(documento, query)·w_text + similarity(nombre, q)·w_trgm − penalización de accesorio
+ *
+ * donde el documento es `search_tsv` más la marca del producto cuando es la de la consulta.
  *
  * La bonificación por stock y el umbral se aplican después, en rank.ts.
  *
@@ -74,18 +80,26 @@ export async function findListing(
   if (source.kind === 'text') {
     const input = source.input;
     if (!input.normalized) return { candidates: [], groups: [] };
+    const brandId = input.brand
+      ? sql`(select id from brands where normalized_name = ${input.brand})`
+      : sql`null::uuid`;
     cand = sql`
       select p.id, p.brand_id,
-             (coalesce(ts_rank_cd(p.search_tsv, q.tsq), 0) * ${input.wText}::float8
+             (coalesce(ts_rank_cd(
+                case when p.brand_id = q.brand_id
+                     then p.search_tsv || to_tsvector('spanish', ${input.brand ?? ''}::text)
+                     else p.search_tsv end, q.tsq), 0) * ${input.wText}::float8
               + similarity(public.immutable_unaccent(lower(p.canonical_name)), q.text) * ${input.wTrgm}::float8
               - case when c.accessory and not ${input.accessory}::boolean
                      then ${ACCESSORY_PENALTY}::float8 else 0 end)::float8 as text_score
         from products p
         cross join (select ${input.tsquery ? sql`to_tsquery('spanish', ${input.tsquery})` : sql`null::tsquery`} as tsq,
-                           ${input.normalized}::text as text) q
+                           ${input.normalized}::text as text,
+                           ${brandId} as brand_id) q
         left join categories c on c.id = p.category_id
        where (q.tsq is not null and p.search_tsv @@ q.tsq)
           or q.text <% public.immutable_unaccent(lower(p.canonical_name))
+          or p.brand_id = q.brand_id
        order by text_score desc, p.id
        limit ${MAX_CANDIDATES}`;
   } else if (source.kind === 'category') {
@@ -332,4 +346,10 @@ export async function listActiveMerchants(
        and o.last_seen_at > now() - make_interval(hours => ${FRESHNESS_HIDDEN_HOURS})
      group by m.slug, m.name
      order by m.name`;
+}
+
+/** Slugs de todas las tiendas (activas o no). */
+export async function listMerchantSlugs(sql: Sql): Promise<string[]> {
+  const rows = await sql<{ slug: string }[]>`select slug from merchants`;
+  return rows.map((r) => r.slug);
 }
