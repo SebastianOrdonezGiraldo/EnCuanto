@@ -3,6 +3,7 @@ import { Bricolage_Grotesque, Inter } from 'next/font/google';
 import type { ReactNode } from 'react';
 import { SiteFooter } from '@/components/site-footer';
 import { SiteHeader } from '@/components/site-header';
+import { siteUrl } from '@/lib/config';
 import './globals.css';
 
 // next/font descarga las fuentes en el build y las sirve desde nuestro dominio (sin peticiones a Google en tiempo de ejecución).
@@ -15,6 +16,7 @@ const bricolage = Bricolage_Grotesque({
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter', display: 'swap' });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(siteUrl()),
   title: { default: '¿EnCuánto? · Compara precios en Colombia', template: '%s · EnCuánto' },
   description: 'Todas las tiendas. Un solo precio: el más bajo.',
   applicationName: 'EnCuánto',
