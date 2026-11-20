@@ -9,3 +9,5 @@ coverage/
 .DS_Store
 fixtures/generado/
 *.rdb
+playwright-report/
+test-results/

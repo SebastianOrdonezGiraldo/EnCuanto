@@ -22,7 +22,8 @@
     "db:generate": "pnpm --filter @encuanto/db generate",
     "db:migrate": "pnpm --filter @encuanto/db migrate",
     "db:seed": "pnpm --filter @encuanto/backend seed",
-    "bench:search": "pnpm --filter @encuanto/backend bench:search"
+    "bench:search": "pnpm --filter @encuanto/backend bench:search",
+    "e2e": "pnpm --filter @encuanto/web e2e"
   },
   "devDependencies": {
     "@encuanto/eslint-plugin": "workspace:*",
