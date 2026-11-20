@@ -54,6 +54,8 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm db:migrate
       - run: pnpm test
+      # Criterio de H2: p95 de /api/search < 150 ms con 50.000 ofertas sintéticas.
+      - run: pnpm bench:search
       - run: pnpm build
 
   windows:

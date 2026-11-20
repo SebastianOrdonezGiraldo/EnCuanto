@@ -21,7 +21,8 @@
     "infra:down": "docker compose -f infra/docker-compose.yml down",
     "db:generate": "pnpm --filter @encuanto/db generate",
     "db:migrate": "pnpm --filter @encuanto/db migrate",
-    "db:seed": "pnpm --filter @encuanto/backend seed"
+    "db:seed": "pnpm --filter @encuanto/backend seed",
+    "bench:search": "pnpm --filter @encuanto/backend bench:search"
   },
   "devDependencies": {
     "@encuanto/eslint-plugin": "workspace:*",
