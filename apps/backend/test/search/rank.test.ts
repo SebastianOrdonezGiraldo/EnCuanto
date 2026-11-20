@@ -104,12 +104,7 @@ describe('rankListing (§8.3)', () => {
   });
 
   it('la bonificación por stock puede superar el umbral y se suma al score', () => {
-    const r = rank(
-      [cand('p1', 0.03)],
-      [offer('p1', 'a', 100)],
-      { discountOnly: false },
-      text,
-    );
+    const r = rank([cand('p1', 0.03)], [offer('p1', 'a', 100)], { discountOnly: false }, text);
     expect(r.items[0]!.score).toBeCloseTo(0.03 + AVAILABILITY_BONUS);
   });
 

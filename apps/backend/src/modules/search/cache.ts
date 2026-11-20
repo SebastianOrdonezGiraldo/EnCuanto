@@ -63,15 +63,7 @@ export class ListingCache {
         generatedAt: s.g,
         facets: s.f,
         items: s.i.map(
-          ([
-            productId,
-            score,
-            bestOfferId,
-            minPrice,
-            maxPrice,
-            offerCount,
-            merchantCount,
-          ]) => ({
+          ([productId, score, bestOfferId, minPrice, maxPrice, offerCount, merchantCount]) => ({
             productId,
             score,
             bestOfferId,
