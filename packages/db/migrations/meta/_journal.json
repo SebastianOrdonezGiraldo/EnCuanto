@@ -29,6 +29,13 @@
       "when": 1795116022446,
       "tag": "0003_catalog_ingestion",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795120619520,
+      "tag": "0004_search",
+      "breakpoints": true
     }
   ]
 }
