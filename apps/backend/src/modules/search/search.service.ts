@@ -21,15 +21,12 @@ import { logSearchQuery } from './query-log';
 import {
   discountPct,
   rankListing,
-  type Candidate,
   type ListingFilters,
   type RankOptions,
 } from './rank';
 import {
-  findCategoryCandidates,
-  findLiveOffers,
-  findMerchantCandidates,
-  findTextCandidates,
+  findListing,
+  type ListingSource,
   getActiveMerchantBySlug,
   getCategoryBySlug,
   hydrate,
@@ -88,17 +85,20 @@ export class SearchService {
       'search',
       { q: parsed.normalized, f: filters, s: query.sort },
       async () => {
-        const candidates = await findTextCandidates(this.deps.client.sql, {
-          tsquery: parsed.tsquery,
-          normalized: parsed.normalized,
-          accessory: parsed.accessory,
-          wText: this.deps.weights.text,
-          wTrgm: this.deps.weights.trgm,
-        });
-        return this.rank(candidates, null, filters, { mode: 'text', sort: query.sort });
+        const source = {
+          kind: 'text' as const,
+          input: {
+            tsquery: parsed.tsquery,
+            normalized: parsed.normalized,
+            accessory: parsed.accessory,
+            wText: this.deps.weights.text,
+            wTrgm: this.deps.weights.trgm,
+          },
+        };
+        return this.rank(source, filters, { mode: 'text', sort: query.sort });
       },
     );
-    const page = await this.page(listing, hit, query);
+    const page = await this.page(listing, hit, query, filters.merchants ?? null);
 
     if (this.deps.logQueries !== false) {
       logSearchQuery(this.deps.client.db, this.deps.log, {
@@ -129,14 +129,14 @@ export class SearchService {
       'browse',
       { k: 'category', id: category.id, f: filters, s: query.sort },
       async () =>
-        this.rank(await findCategoryCandidates(this.deps.client.sql, category.id), null, filters, {
+        this.rank({ kind: 'category', categoryId: category.id }, filters, {
           mode: 'browse',
           sort: query.sort,
         }),
     );
     return {
       category: { slug: category.slug, name: category.name },
-      ...(await this.page(listing, hit, query)),
+      ...(await this.page(listing, hit, query, filters.merchants ?? null)),
     };
   }
 
@@ -150,19 +150,14 @@ export class SearchService {
       'browse',
       { k: 'merchant', id: merchant.id, f: filters, s: query.sort },
       async () =>
-        this.rank(
-          await findMerchantCandidates(this.deps.client.sql, merchant.id),
-          merchant.id,
-          filters,
-          {
-            mode: 'browse',
-            sort: query.sort,
-          },
-        ),
+        this.rank({ kind: 'merchant', merchantId: merchant.id }, filters, {
+          mode: 'browse',
+          sort: query.sort,
+        }),
     );
     return {
       merchant: { slug: merchant.slug, name: merchant.name },
-      ...(await this.page(listing, hit, query)),
+      ...(await this.page(listing, hit, query, [merchant.slug])),
     };
   }
 
@@ -175,17 +170,14 @@ export class SearchService {
   }
 
   private async rank(
-    candidates: Candidate[],
-    merchantId: string | null,
+    source: ListingSource,
     filters: ListingFilters,
     options: RankOptions,
   ): Promise<CachedListing> {
-    const offers = await findLiveOffers(
-      this.deps.client.sql,
-      candidates.map((c) => c.productId),
-      merchantId,
-    );
-    const { items, facets } = rankListing(candidates, offers, filters, options);
+    const { candidates, groups } = await findListing(this.deps.client.sql, source, {
+      discountOnly: filters.discountOnly,
+    });
+    const { items, facets } = rankListing(candidates, groups, filters, options);
     return { generatedAt: this.now().toISOString(), items, facets };
   }
 
@@ -206,18 +198,23 @@ export class SearchService {
     return { listing, hit: false };
   }
 
-  /** Recorta la página del conjunto ordenado y la completa con los datos vigentes. */
+  /**
+   * Recorta la página del conjunto ordenado y la completa con los datos vigentes. `merchants`:
+   * tiendas a las que se limita el listado (filtro o listado de una tienda), para contar variantes.
+   */
   private async page(
     listing: CachedListing,
     hit: boolean,
     query: ListingQuery,
+    merchants: readonly string[] | null,
   ): Promise<ListingPage> {
     const start = (query.page - 1) * query.page_size;
     const slice = listing.items.slice(start, start + query.page_size);
-    const { products, offers } = await hydrate(
+    const { products, offers, variantCounts } = await hydrate(
       this.deps.client.sql,
       slice.map((i) => i.productId),
       slice.map((i) => i.bestOfferId),
+      merchants,
     );
     const now = this.now();
     const results: SearchResult[] = [];
@@ -236,7 +233,7 @@ export class SearchService {
             ? { slug: product.categorySlug, name: product.categoryName }
             : null,
         image_url: product.imageUrl ?? offer.imageUrl,
-        variant_count: item.variantCount,
+        variant_count: variantCounts.get(item.productId) ?? 1,
         offer_count: item.offerCount,
         merchant_count: item.merchantCount,
         min_price: item.minPrice,

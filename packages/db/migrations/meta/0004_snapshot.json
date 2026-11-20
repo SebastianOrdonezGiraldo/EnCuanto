@@ -1,5 +1,5 @@
 {
-  "id": "f458e39b-ca76-4ec0-a03a-606ed211fa7c",
+  "id": "f7eb4fc1-0c47-4f98-afa9-eca748e4aeb5",
   "prevId": "b14e4282-4976-47af-a117-374e576d7637",
   "version": "7",
   "dialect": "postgresql",
@@ -1226,6 +1226,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "product_id": {
+          "name": "product_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "external_id": {
           "name": "external_id",
           "type": "text",
@@ -1375,6 +1381,69 @@
           "method": "btree",
           "with": {}
         },
+        "offers_product_listing_idx": {
+          "name": "offers_product_listing_idx",
+          "columns": [
+            {
+              "expression": "product_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "merchant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "price",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "last_seen_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "availability",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "currency",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "list_price",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "variant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "offers_gtin_idx": {
           "name": "offers_gtin_idx",
           "columns": [
@@ -1441,6 +1510,19 @@
           "tableTo": "product_variants",
           "columnsFrom": [
             "variant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "offers_product_id_products_id_fk": {
+          "name": "offers_product_id_products_id_fk",
+          "tableFrom": "offers",
+          "tableTo": "products",
+          "columnsFrom": [
+            "product_id"
           ],
           "columnsTo": [
             "id"

@@ -10,12 +10,13 @@ export {
   MAX_RESULTS,
   MIN_SCORE,
   discountPct,
-  isDiscountValidated,
+  groupOffers,
   rankListing,
   summarize,
   type Candidate,
   type ListingFilters,
   type LiveOffer,
+  type MerchantGroup,
   type RankedItem,
 } from './rank';
 export { registerSearchRoutes } from './search.routes';

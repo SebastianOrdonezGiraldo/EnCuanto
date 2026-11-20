@@ -9,8 +9,8 @@ export interface CacheStore {
   set(key: string, value: string, mode: 'EX', seconds: number): Promise<unknown>;
 }
 
-/** Un producto del conjunto ordenado, compacto: [id, score, oferta, min, max, ofertas, variantes, tiendas]. */
-type Tuple = [string, number, string, number, number, number, number, number];
+/** Un producto del conjunto ordenado, compacto: [id, score, oferta, min, max, ofertas, tiendas]. */
+type Tuple = [string, number, string, number, number, number, number];
 
 /** Valor cacheado (§8.6): el conjunto completo de IDs y scores, las facetas y el total. */
 export interface CachedListing {
@@ -70,7 +70,6 @@ export class ListingCache {
             minPrice,
             maxPrice,
             offerCount,
-            variantCount,
             merchantCount,
           ]) => ({
             productId,
@@ -79,7 +78,6 @@ export class ListingCache {
             minPrice,
             maxPrice,
             offerCount,
-            variantCount,
             merchantCount,
           }),
         ),
@@ -102,7 +100,6 @@ export class ListingCache {
         r.minPrice,
         r.maxPrice,
         r.offerCount,
-        r.variantCount,
         r.merchantCount,
       ]),
     };

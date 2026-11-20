@@ -31,7 +31,6 @@ const listing = {
       minPrice: 1,
       maxPrice: 2,
       offerCount: 3,
-      variantCount: 1,
       merchantCount: 2,
     },
   ],

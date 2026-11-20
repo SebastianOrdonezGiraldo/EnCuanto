@@ -104,4 +104,52 @@ describe.skipIf(!url)('migraciones', () => {
     ).rejects.toThrow();
     await client.db.delete(products).where(eq(products.id, p!.id));
   });
+
+  it('offers.product_id sigue a la variante (insert, cambio, fusión y borrado)', async () => {
+    const [m] = await client.db
+      .insert(merchants)
+      .values({ slug: `test-pid-${Date.now()}`, name: 'Tienda Ficticia', sourceType: 'manual' })
+      .returning();
+    const [p1, p2] = await client.db
+      .insert(products)
+      .values([{ canonicalName: 'Producto Uno' }, { canonicalName: 'Producto Dos' }])
+      .returning();
+    const [v1, v2] = await client.db
+      .insert(productVariants)
+      .values([{ productId: p1!.id }, { productId: p2!.id }])
+      .returning();
+    const productOf = async (id: string) =>
+      (await client.db.select().from(offers).where(eq(offers.id, id)))[0]!.productId;
+
+    // Escribir product_id a mano no tiene efecto: manda la variante.
+    const [o] = await client.db
+      .insert(offers)
+      .values({
+        merchantId: m!.id,
+        externalId: 'PID',
+        titleRaw: 'x',
+        url: 'https://t.example/p/pid',
+        price: 1000,
+        variantId: v1!.id,
+        productId: p2!.id,
+      })
+      .returning();
+    expect(await productOf(o!.id)).toBe(p1!.id);
+
+    await client.db.update(offers).set({ variantId: v2!.id }).where(eq(offers.id, o!.id));
+    expect(await productOf(o!.id)).toBe(p2!.id);
+
+    await client.db
+      .update(productVariants)
+      .set({ productId: p1!.id })
+      .where(eq(productVariants.id, v2!.id));
+    expect(await productOf(o!.id)).toBe(p1!.id);
+
+    await client.db.delete(productVariants).where(eq(productVariants.id, v2!.id));
+    expect(await productOf(o!.id)).toBeNull();
+
+    await client.db.delete(merchants).where(eq(merchants.id, m!.id));
+    await client.db.delete(products).where(eq(products.id, p1!.id));
+    await client.db.delete(products).where(eq(products.id, p2!.id));
+  });
 });

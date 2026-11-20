@@ -116,6 +116,26 @@ describe.skipIf(!DATABASE_URL)('búsqueda y /go (H2)', () => {
     expect(body.results.some((r: { merchant_count: number }) => r.merchant_count > 1)).toBe(true);
   });
 
+  it('cuenta las versiones con oferta vigente, solo en las tiendas filtradas', async () => {
+    const variantsOf = async (productId: string, merchant: string | null) =>
+      (
+        await client.sql<{ n: number }[]>`
+          select count(distinct o.variant_id)::int as n
+            from offers o join merchants m on m.id = o.merchant_id
+           where o.product_id = ${productId} and (${merchant}::text is null or m.slug = ${merchant})`
+      )[0]!.n;
+    for (const qs of ['q=celular', 'q=celular&merchants=tienda-aurora']) {
+      const { body } = await search(qs);
+      expect(body.results.length).toBeGreaterThan(0);
+      const merchant = qs.includes('merchants') ? 'tienda-aurora' : null;
+      for (const r of body.results) {
+        expect(r.variant_count).toBe(await variantsOf(r.product_id, merchant));
+      }
+    }
+    const { body } = await search('q=celular');
+    expect(body.results.some((r: { variant_count: number }) => r.variant_count > 1)).toBe(true);
+  });
+
   it.each(['xqzw kjhv', 'asdfgh', 'zzzz yyyy wwww'])(
     'una consulta sin sentido devuelve vacío: %s',
     async (q) => {

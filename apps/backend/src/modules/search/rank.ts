@@ -2,7 +2,8 @@ import type { SearchSort } from '@encuanto/contracts';
 
 /**
  * Ranking, filtros y facetas de un listado (§8.3), como funciones puras sobre lo que devuelve
- * la BD: los productos candidatos con su puntuación de texto y sus ofertas vigentes.
+ * la BD: los productos candidatos con su puntuación de texto y, por cada tienda, el resumen de
+ * sus ofertas vigentes de ese producto (`MerchantGroup`, agregado en SQL).
  */
 
 /** Bonificación por tener al menos una oferta en stock (§8.3). */
@@ -24,7 +25,6 @@ export interface Candidate {
 export interface LiveOffer {
   productId: string;
   offerId: string;
-  variantId: string;
   merchant: string;
   merchantName: string;
   price: number;
@@ -33,16 +33,45 @@ export interface LiveOffer {
   lastSeenAt: Date;
 }
 
+/** Mejor oferta de un grupo. `lastSeenMs` en milisegundos desde epoch. */
+export interface GroupBest {
+  offerId: string;
+  price: number;
+  listPrice: number | null;
+  outOfStock: boolean;
+  lastSeenMs: number;
+}
+
+/** Resumen de las ofertas vigentes de un producto en una tienda. */
+export interface MerchantGroup {
+  productId: string;
+  merchant: string;
+  merchantName: string;
+  best: GroupBest;
+  /** Precio máximo entre las ofertas que se pueden comprar (no agotadas); null si no hay. */
+  maxBuyable: number | null;
+  maxAll: number;
+  offerCount: number;
+  inStock: boolean;
+}
+
 export interface ListingFilters {
   merchants?: readonly string[];
   /** Marcas por su nombre normalizado (`brands.normalized_name`). */
   brands?: readonly string[];
   minPrice?: number;
   maxPrice?: number;
+  /**
+   * Solo descuentos validados (§8.4). Se aplica en SQL, al elegir las ofertas vigentes; hasta
+   * la validación con historial de H5 ninguna oferta cumple, así que el listado queda vacío.
+   */
   discountOnly: boolean;
 }
 
-/** Un producto del conjunto ordenado. Es lo que se guarda en la caché (§8.6). */
+/**
+ * Un producto del conjunto ordenado. Es lo que se guarda en la caché (§8.6). El número de
+ * variantes no está aquí: no influye en el orden y se cuenta al hidratar la página.
+ */
 export interface RankedItem {
   productId: string;
   score: number;
@@ -50,7 +79,6 @@ export interface RankedItem {
   minPrice: number;
   maxPrice: number;
   offerCount: number;
-  variantCount: number;
   merchantCount: number;
 }
 
@@ -72,54 +100,87 @@ export function discountPct(price: number, listPrice: number | null): number | n
   return Math.round(((listPrice - price) / listPrice) * 1000) / 10;
 }
 
-/**
- * Descuento validado con historial (§8.4). La validación (mediana de 30 días, tope del 80 %…)
- * llega en H5 con el módulo `pricing`; hasta entonces ningún descuento cuenta como validado, así
- * que `discount_only` devuelve vacío en lugar de dar por buenos los descuentos de la tienda.
- */
-export function isDiscountValidated(_offer: LiveOffer): boolean {
-  return false;
-}
-
 interface Summary {
-  best: LiveOffer;
+  best: GroupBest;
   minPrice: number;
   maxPrice: number;
   offerCount: number;
-  variantCount: number;
   merchantCount: number;
   inStock: boolean;
 }
 
-const outOfStock = (o: LiveOffer) => o.availability === 'out_of_stock';
-
 /** Mejor oferta: primero las que se pueden comprar, luego la más barata y la vista más reciente. */
-function compareOffers(a: LiveOffer, b: LiveOffer): number {
-  return (
-    Number(outOfStock(a)) - Number(outOfStock(b)) ||
-    a.price - b.price ||
-    b.lastSeenAt.getTime() - a.lastSeenAt.getTime() ||
-    (a.offerId < b.offerId ? -1 : a.offerId > b.offerId ? 1 : 0)
-  );
+function better(a: GroupBest, b: GroupBest): boolean {
+  if (a.outOfStock !== b.outOfStock) return !a.outOfStock;
+  if (a.price !== b.price) return a.price < b.price;
+  if (a.lastSeenMs !== b.lastSeenMs) return a.lastSeenMs > b.lastSeenMs;
+  return a.offerId < b.offerId;
 }
 
 /**
- * Resume las ofertas de un producto. El rango de precio usa solo las ofertas que se pueden
- * comprar si hay alguna: un agotado más barato no es el "desde $X".
+ * Agrupa ofertas por (producto, tienda) igual que la consulta SQL. Es la referencia de esa
+ * agregación y la usan los tests.
  */
-export function summarize(offers: readonly LiveOffer[]): Summary | null {
-  if (offers.length === 0) return null;
-  const best = [...offers].sort(compareOffers)[0]!;
-  const buyable = offers.filter((o) => !outOfStock(o));
-  const priced = buyable.length > 0 ? buyable : offers;
+export function groupOffers(offers: readonly LiveOffer[]): MerchantGroup[] {
+  const groups = new Map<string, MerchantGroup>();
+  for (const o of offers) {
+    const best: GroupBest = {
+      offerId: o.offerId,
+      price: o.price,
+      listPrice: o.listPrice,
+      outOfStock: o.availability === 'out_of_stock',
+      lastSeenMs: o.lastSeenAt.getTime(),
+    };
+    const key = `${o.productId}|${o.merchant}`;
+    const g = groups.get(key);
+    if (!g) {
+      groups.set(key, {
+        productId: o.productId,
+        merchant: o.merchant,
+        merchantName: o.merchantName,
+        best,
+        maxBuyable: best.outOfStock ? null : o.price,
+        maxAll: o.price,
+        offerCount: 1,
+        inStock: o.availability === 'in_stock',
+      });
+      continue;
+    }
+    if (better(best, g.best)) g.best = best;
+    if (!best.outOfStock) g.maxBuyable = Math.max(g.maxBuyable ?? 0, o.price);
+    g.maxAll = Math.max(g.maxAll, o.price);
+    g.offerCount++;
+    g.inStock ||= o.availability === 'in_stock';
+  }
+  return [...groups.values()];
+}
+
+/**
+ * Resume las ofertas de un producto (uno o varios grupos de tienda). El rango de precio usa
+ * solo las ofertas que se pueden comprar si hay alguna: un agotado más barato no es el
+ * "desde $X".
+ */
+export function summarize(groups: readonly MerchantGroup[]): Summary | null {
+  if (groups.length === 0) return null;
+  let best = groups[0]!.best;
+  let maxBuyable: number | null = null;
+  let maxAll = 0;
+  let offerCount = 0;
+  let inStock = false;
+  for (const g of groups) {
+    if (better(g.best, best)) best = g.best;
+    if (g.maxBuyable !== null) maxBuyable = Math.max(maxBuyable ?? 0, g.maxBuyable);
+    maxAll = Math.max(maxAll, g.maxAll);
+    offerCount += g.offerCount;
+    inStock ||= g.inStock;
+  }
   return {
     best,
     minPrice: best.price,
-    maxPrice: Math.max(...priced.map((o) => o.price)),
-    offerCount: offers.length,
-    variantCount: new Set(offers.map((o) => o.variantId)).size,
-    merchantCount: new Set(offers.map((o) => o.merchant)).size,
-    inStock: offers.some((o) => o.availability === 'in_stock'),
+    maxPrice: maxBuyable ?? maxAll,
+    offerCount,
+    merchantCount: groups.length,
+    inStock,
   };
 }
 
@@ -139,16 +200,15 @@ const round4 = (n: number) => Math.round(n * 10_000) / 10_000;
  */
 export function rankListing(
   candidates: readonly Candidate[],
-  offers: readonly LiveOffer[],
+  groups: readonly MerchantGroup[],
   filters: ListingFilters,
   options: RankOptions,
 ): { items: RankedItem[]; facets: FacetCounts } {
-  const byProduct = new Map<string, LiveOffer[]>();
-  for (const o of offers) {
-    if (filters.discountOnly && !isDiscountValidated(o)) continue;
-    const list = byProduct.get(o.productId);
-    if (list) list.push(o);
-    else byProduct.set(o.productId, [o]);
+  const byProduct = new Map<string, MerchantGroup[]>();
+  for (const g of groups) {
+    const list = byProduct.get(g.productId);
+    if (list) list.push(g);
+    else byProduct.set(g.productId, [g]);
   }
   const merchantSet = filters.merchants?.length ? new Set(filters.merchants) : null;
   const brandSet = filters.brands?.length ? new Set(filters.brands) : null;
@@ -164,29 +224,19 @@ export function rankListing(
     if (!all) continue;
     const brandOk = !brandSet || (c.brandKey !== null && brandSet.has(c.brandKey));
 
-    // Faceta de tiendas: ignora el filtro de tienda, respeta marca y precio.
+    // Faceta de tiendas: ignora el filtro de tienda, respeta marca y precio (el de esa tienda).
     if (brandOk) {
-      const perMerchant = new Map<string, LiveOffer[]>();
-      for (const o of all) {
-        const list = perMerchant.get(o.merchant);
-        if (list) list.push(o);
-        else perMerchant.set(o.merchant, [o]);
-      }
-      for (const [slug, list] of perMerchant) {
-        const s = summarize(list)!;
-        if (
-          options.mode === 'text' &&
-          c.textScore + (s.inStock ? AVAILABILITY_BONUS : 0) <= MIN_SCORE
-        )
-          continue;
-        if (!inRange(s.minPrice, filters)) continue;
-        const entry = merchantFacet.get(slug) ?? { name: s.best.merchantName, count: 0 };
+      for (const g of all) {
+        const bonus = g.inStock ? AVAILABILITY_BONUS : 0;
+        if (options.mode === 'text' && c.textScore + bonus <= MIN_SCORE) continue;
+        if (!inRange(g.best.price, filters)) continue;
+        const entry = merchantFacet.get(g.merchant) ?? { name: g.merchantName, count: 0 };
         entry.count++;
-        merchantFacet.set(slug, entry);
+        merchantFacet.set(g.merchant, entry);
       }
     }
 
-    const filtered = merchantSet ? all.filter((o) => merchantSet.has(o.merchant)) : all;
+    const filtered = merchantSet ? all.filter((g) => merchantSet.has(g.merchant)) : all;
     const s = summarize(filtered);
     if (!s) continue;
     const score = c.textScore + (s.inStock ? AVAILABILITY_BONUS : 0);
@@ -213,7 +263,6 @@ export function rankListing(
       minPrice: s.minPrice,
       maxPrice: s.maxPrice,
       offerCount: s.offerCount,
-      variantCount: s.variantCount,
       merchantCount: s.merchantCount,
       discount: discountPct(s.best.price, s.best.listPrice),
     });

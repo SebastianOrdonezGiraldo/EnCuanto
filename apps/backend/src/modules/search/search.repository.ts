@@ -1,6 +1,6 @@
 import { FRESHNESS_HIDDEN_HOURS } from '@encuanto/contracts';
 import type { DbClient } from '@encuanto/db';
-import type { Candidate, LiveOffer } from './rank';
+import type { Candidate, LiveOffer, MerchantGroup } from './rank';
 
 type Sql = DbClient['sql'];
 
@@ -17,126 +17,154 @@ export interface TextCandidatesInput {
   wTrgm: number;
 }
 
-interface CandidateRow {
+/** De dónde salen los productos de un listado. */
+export type ListingSource =
+  | { kind: 'text'; input: TextCandidatesInput }
+  | { kind: 'category'; categoryId: string }
+  | { kind: 'merchant'; merchantId: string };
+
+interface ListingRow {
   product_id: string;
   text_score: number;
   brand_key: string | null;
   brand_name: string | null;
+  merchant: string;
+  merchant_name: string;
+  best_id: string;
+  best_price: number;
+  best_list_price: number | null;
+  best_oos: boolean;
+  best_seen_ms: number;
+  max_buyable: number | null;
+  max_all: number;
+  offer_count: number;
+  in_stock: boolean;
 }
 
-const toCandidate = (r: CandidateRow): Candidate => ({
-  productId: r.product_id,
-  textScore: Number(r.text_score),
-  brandKey: r.brand_key,
-  brandName: r.brand_name,
-});
+/** Condición de oferta vigente (§8.5) sobre `offers o` y `merchants m`. */
+const liveOffer = (sql: Sql) => sql`
+  m.active
+  and o.currency = 'COP'
+  and o.last_seen_at > now() - make_interval(hours => ${FRESHNESS_HIDDEN_HOURS})`;
 
 /**
- * Productos que coinciden con el texto y su puntuación de §8.3:
+ * Candidatos de un listado y, por cada (producto, tienda), el resumen de sus ofertas vigentes,
+ * en una sola consulta. La agregación por tienda reduce las filas que viajan a Node (y el trabajo
+ * del ranking) a ~productos × tiendas; `groupOffers` en rank.ts es su equivalente en TypeScript.
+ *
+ * Texto (§8.3): entran por FTS en español (índice GIN de `search_tsv`) o por similitud de
+ * palabra con trigramas (`<%`, índice GIN sobre el nombre sin tildes), y puntúan
  *
  *   ts_rank_cd(search_tsv, query)·w_text + similarity(nombre, q)·w_trgm − penalización de accesorio
  *
- * Entran por FTS en español (índice GIN de `search_tsv`) o por similitud de palabra con
- * trigramas (`<%`, índice GIN sobre el nombre sin tildes), que tolera errores de escritura.
- * La bonificación por stock y el umbral se aplican después, con las ofertas (rank.ts).
+ * La bonificación por stock y el umbral se aplican después, en rank.ts.
+ *
+ * Ofertas vigentes (§8.5): tienda activa, en COP y vistas hace ≤ 72 h. Se leen por
+ * `offers.product_id` con el índice cubriente `offers_product_listing_idx` (index-only scan), y
+ * la mejor oferta y los agregados de cada tienda salen de una sola ordenación (ventana +
+ * `distinct on`). `discountOnly` (§8.4): solo ofertas con descuento validado con historial; esa
+ * validación llega en H5, así que de momento ninguna cumple.
  */
-export async function findTextCandidates(
+export async function findListing(
   sql: Sql,
-  input: TextCandidatesInput,
-): Promise<Candidate[]> {
-  if (!input.normalized) return [];
-  const rows = await sql<CandidateRow[]>`
-    with q as (
-      select ${input.tsquery ? sql`to_tsquery('spanish', ${input.tsquery})` : sql`null::tsquery`} as tsq,
-             ${input.normalized}::text as text
+  source: ListingSource,
+  options: { discountOnly: boolean },
+): Promise<{ candidates: Candidate[]; groups: MerchantGroup[] }> {
+  let cand;
+  if (source.kind === 'text') {
+    const input = source.input;
+    if (!input.normalized) return { candidates: [], groups: [] };
+    cand = sql`
+      select p.id, p.brand_id,
+             (coalesce(ts_rank_cd(p.search_tsv, q.tsq), 0) * ${input.wText}::float8
+              + similarity(public.immutable_unaccent(lower(p.canonical_name)), q.text) * ${input.wTrgm}::float8
+              - case when c.accessory and not ${input.accessory}::boolean
+                     then ${ACCESSORY_PENALTY}::float8 else 0 end)::float8 as text_score
+        from products p
+        cross join (select ${input.tsquery ? sql`to_tsquery('spanish', ${input.tsquery})` : sql`null::tsquery`} as tsq,
+                           ${input.normalized}::text as text) q
+        left join categories c on c.id = p.category_id
+       where (q.tsq is not null and p.search_tsv @@ q.tsq)
+          or q.text <% public.immutable_unaccent(lower(p.canonical_name))
+       order by text_score desc, p.id
+       limit ${MAX_CANDIDATES}`;
+  } else if (source.kind === 'category') {
+    cand = sql`
+      select p.id, p.brand_id, 0::float8 as text_score
+        from products p where p.category_id = ${source.categoryId}`;
+  } else {
+    cand = sql`
+      select p.id, p.brand_id, 0::float8 as text_score
+        from products p
+       where p.id in (select o.product_id from offers o where o.merchant_id = ${source.merchantId})`;
+  }
+  const merchantId = source.kind === 'merchant' ? source.merchantId : null;
+
+  const rows = await sql<ListingRow[]>`
+    with cand as materialized (${cand}),
+    live as (
+      select o.product_id, o.merchant_id, o.id, o.price, o.list_price,
+             o.availability = 'out_of_stock' as oos, o.availability = 'in_stock' as ins, o.last_seen_at
+        from cand
+        join offers o on o.product_id = cand.id
+        join merchants m on m.id = o.merchant_id
+       where ${liveOffer(sql)}
+         and (${merchantId}::uuid is null or o.merchant_id = ${merchantId}::uuid)
+         and not ${options.discountOnly}::boolean
+    ),
+    grp as (
+      select distinct on (product_id, merchant_id)
+             product_id, merchant_id, id, price, list_price, oos, last_seen_at,
+             max(price) filter (where not oos) over w as max_buyable,
+             max(price) over w as max_all,
+             count(*) over w as offer_count,
+             bool_or(ins) over w as in_stock
+        from live
+      window w as (partition by product_id, merchant_id)
+       order by product_id, merchant_id, oos, price, last_seen_at desc, id
     )
-    select p.id as product_id,
-           (coalesce(ts_rank_cd(p.search_tsv, q.tsq), 0) * ${input.wText}::float8
-            + similarity(public.immutable_unaccent(lower(p.canonical_name)), q.text) * ${input.wTrgm}::float8
-            - case when c.accessory and not ${input.accessory}::boolean
-                   then ${ACCESSORY_PENALTY}::float8 else 0 end)::float8 as text_score,
-           b.normalized_name as brand_key,
-           b.name as brand_name
-      from products p
-      cross join q
-      left join categories c on c.id = p.category_id
-      left join brands b on b.id = p.brand_id
-     where (q.tsq is not null and p.search_tsv @@ q.tsq)
-        or q.text <% public.immutable_unaccent(lower(p.canonical_name))
-     order by text_score desc, p.id
-     limit ${MAX_CANDIDATES}`;
-  return rows.map(toCandidate);
-}
+    select cand.id as product_id, cand.text_score, b.normalized_name as brand_key, b.name as brand_name,
+           m.slug as merchant, m.name as merchant_name,
+           grp.id as best_id, grp.price::float8 as best_price, grp.list_price::float8 as best_list_price,
+           grp.oos as best_oos, (extract(epoch from grp.last_seen_at) * 1000)::float8 as best_seen_ms,
+           grp.max_buyable::float8 as max_buyable, grp.max_all::float8 as max_all,
+           grp.offer_count::int as offer_count, grp.in_stock
+      from grp
+      join cand on cand.id = grp.product_id
+      join merchants m on m.id = grp.merchant_id
+      left join brands b on b.id = cand.brand_id`;
 
-/** Productos de una categoría (listado sin texto: puntuación 0). */
-export async function findCategoryCandidates(sql: Sql, categoryId: string): Promise<Candidate[]> {
-  const rows = await sql<CandidateRow[]>`
-    select p.id as product_id, 0::float8 as text_score,
-           b.normalized_name as brand_key, b.name as brand_name
-      from products p
-      left join brands b on b.id = p.brand_id
-     where p.category_id = ${categoryId}`;
-  return rows.map(toCandidate);
-}
-
-/** Productos con alguna oferta vigente de una tienda (listado sin texto). */
-export async function findMerchantCandidates(sql: Sql, merchantId: string): Promise<Candidate[]> {
-  const rows = await sql<CandidateRow[]>`
-    select distinct p.id as product_id, 0::float8 as text_score,
-           b.normalized_name as brand_key, b.name as brand_name
-      from offers o
-      join product_variants v on v.id = o.variant_id
-      join products p on p.id = v.product_id
-      left join brands b on b.id = p.brand_id
-     where o.merchant_id = ${merchantId}
-       and o.last_seen_at > now() - make_interval(hours => ${FRESHNESS_HIDDEN_HOURS})`;
-  return rows.map(toCandidate);
-}
-
-interface OfferRow {
-  product_id: string;
-  offer_id: string;
-  variant_id: string;
-  merchant: string;
-  merchant_name: string;
-  price: number;
-  list_price: number | null;
-  availability: LiveOffer['availability'];
-  last_seen_at: Date | string;
-}
-
-/**
- * Ofertas vigentes de los productos dados (§8.5): tienda activa, en COP y vistas hace ≤ 72 h.
- * `merchantId` restringe a una tienda (listado de tienda).
- */
-export async function findLiveOffers(
-  sql: Sql,
-  productIds: readonly string[],
-  merchantId: string | null = null,
-): Promise<LiveOffer[]> {
-  if (productIds.length === 0) return [];
-  const rows = await sql<OfferRow[]>`
-    select v.product_id, o.id as offer_id, o.variant_id, m.slug as merchant, m.name as merchant_name,
-           o.price::float8 as price, o.list_price::float8 as list_price, o.availability, o.last_seen_at
-      from product_variants v
-      join offers o on o.variant_id = v.id
-      join merchants m on m.id = o.merchant_id
-     where v.product_id = any(${productIds as string[]}::uuid[])
-       and m.active
-       and o.currency = 'COP'
-       and o.last_seen_at > now() - make_interval(hours => ${FRESHNESS_HIDDEN_HOURS})
-       and (${merchantId}::uuid is null or o.merchant_id = ${merchantId}::uuid)`;
-  return rows.map((r) => ({
-    productId: r.product_id,
-    offerId: r.offer_id,
-    variantId: r.variant_id,
-    merchant: r.merchant,
-    merchantName: r.merchant_name,
-    price: Number(r.price),
-    listPrice: r.list_price === null ? null : Number(r.list_price),
-    availability: r.availability,
-    lastSeenAt: new Date(r.last_seen_at),
-  }));
+  const candidates: Candidate[] = [];
+  const groups: MerchantGroup[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    if (!seen.has(r.product_id)) {
+      seen.add(r.product_id);
+      candidates.push({
+        productId: r.product_id,
+        textScore: Number(r.text_score),
+        brandKey: r.brand_key,
+        brandName: r.brand_name,
+      });
+    }
+    groups.push({
+      productId: r.product_id,
+      merchant: r.merchant,
+      merchantName: r.merchant_name,
+      best: {
+        offerId: r.best_id,
+        price: Number(r.best_price),
+        listPrice: r.best_list_price === null ? null : Number(r.best_list_price),
+        outOfStock: r.best_oos,
+        lastSeenMs: Number(r.best_seen_ms),
+      },
+      maxBuyable: r.max_buyable === null ? null : Number(r.max_buyable),
+      maxAll: Number(r.max_all),
+      offerCount: r.offer_count,
+      inStock: r.in_stock,
+    });
+  }
+  return { candidates, groups };
 }
 
 export interface ProductDetails {
@@ -159,14 +187,25 @@ export interface OfferDetails {
   lastSeenAt: Date;
 }
 
-/** Datos para pintar una página de resultados (solo los ~24 productos de la página). */
+/**
+ * Datos para pintar una página de resultados (solo los ~24 productos de la página). Cuenta
+ * también las variantes con oferta vigente de cada producto, en las tiendas `merchants` si se
+ * indican (filtro de tienda o listado de una tienda).
+ */
 export async function hydrate(
   sql: Sql,
   productIds: readonly string[],
   offerIds: readonly string[],
-): Promise<{ products: Map<string, ProductDetails>; offers: Map<string, OfferDetails> }> {
-  if (productIds.length === 0) return { products: new Map(), offers: new Map() };
-  const [productRows, offerRows] = await Promise.all([
+  merchants: readonly string[] | null,
+): Promise<{
+  products: Map<string, ProductDetails>;
+  offers: Map<string, OfferDetails>;
+  variantCounts: Map<string, number>;
+}> {
+  if (productIds.length === 0) {
+    return { products: new Map(), offers: new Map(), variantCounts: new Map() };
+  }
+  const [productRows, offerRows, variantRows] = await Promise.all([
     sql<
       {
         id: string;
@@ -203,6 +242,14 @@ export async function hydrate(
         from offers o
         join merchants m on m.id = o.merchant_id
        where o.id = any(${offerIds as string[]}::uuid[])`,
+    sql<{ product_id: string; n: number }[]>`
+      select o.product_id, count(distinct o.variant_id)::int as n
+        from offers o
+        join merchants m on m.id = o.merchant_id
+       where o.product_id = any(${productIds as string[]}::uuid[])
+         and ${liveOffer(sql)}
+         ${merchants?.length ? sql`and m.slug = any(${merchants as string[]}::text[])` : sql``}
+       group by o.product_id`,
   ]);
   return {
     products: new Map(
@@ -233,6 +280,7 @@ export async function hydrate(
         },
       ]),
     ),
+    variantCounts: new Map(variantRows.map((r) => [r.product_id, r.n])),
   };
 }
 

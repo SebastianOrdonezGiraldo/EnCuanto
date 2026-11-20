@@ -98,7 +98,9 @@ const fixturesDir = mkdtempSync(path.join(tmpdir(), 'encuanto-bench-'));
 try {
   let t = performance.now();
   const seeded = await seedSynthetic(client, { fixturesDir, products: Number(values.products) });
-  await client.sql`analyze`;
+  // Estado estable de una BD en uso: estadísticas al día y mapa de visibilidad (index-only
+  // scans). Sin esto, el autovacuum de lo recién sembrado corre en medio de la medición.
+  await client.sql`vacuum analyze`;
   const offers = seeded.syncs.reduce((n, r) => n + r.itemsUpserted, 0);
   out(
     `Catálogo: ${offers} ofertas, ${seeded.catalog.products} productos, ` +
@@ -129,12 +131,15 @@ try {
     // Calentamiento: planes de consulta, JIT y pool de conexiones.
     for (const url of urls.slice(0, 30)) await app.inject({ method: 'GET', url });
     const times: number[] = [];
+    const slow: { ms: number; url: string }[] = [];
     let empty = 0;
     let hits = 0;
     for (const url of urls) {
       t = performance.now();
       const res = await app.inject({ method: 'GET', url });
-      times.push(performance.now() - t);
+      const ms = performance.now() - t;
+      times.push(ms);
+      slow.push({ ms, url });
       if (res.statusCode !== 200) throw new Error(`HTTP ${res.statusCode} en ${url}`);
       const body = res.json();
       if (body.total === 0) empty++;
@@ -153,6 +158,8 @@ try {
         `p95 ${stats.p95.toFixed(1)} ms · p99 ${stats.p99.toFixed(1)} ms · máx ${stats.max.toFixed(1)} ms · ` +
         `vacías ${empty} · aciertos de caché ${hits}`,
     );
+    slow.sort((a, b) => b.ms - a.ms);
+    for (const s of slow.slice(0, 5)) out(`           ${s.ms.toFixed(1).padStart(6)} ms  ${s.url}`);
     return stats;
   };
 

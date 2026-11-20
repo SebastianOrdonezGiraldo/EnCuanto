@@ -2,11 +2,22 @@ import { describe, expect, it } from 'vitest';
 import {
   AVAILABILITY_BONUS,
   discountPct,
+  groupOffers,
   rankListing,
   summarize,
   type Candidate,
+  type ListingFilters,
   type LiveOffer,
 } from '../../src/modules/search/index';
+
+/** Las pruebas parten de ofertas sueltas; groupOffers las agrupa como la consulta SQL. */
+const rank = (
+  candidates: Candidate[],
+  offers: LiveOffer[],
+  filters: ListingFilters,
+  options: Parameters<typeof rankListing>[3],
+) => rankListing(candidates, groupOffers(offers), filters, options);
+const sum = (offers: LiveOffer[]) => summarize(groupOffers(offers));
 
 const NOW = new Date('2026-11-19T12:00:00Z');
 let seq = 0;
@@ -18,7 +29,6 @@ const offer = (
 ): LiveOffer => ({
   productId,
   offerId: `o${String(++seq).padStart(3, '0')}`,
-  variantId: `${productId}-v1`,
   merchant,
   merchantName: merchant.toUpperCase(),
   price,
@@ -50,22 +60,21 @@ describe('discountPct (§8.4)', () => {
 
 describe('summarize', () => {
   it('la mejor oferta es la más barata que se puede comprar', () => {
-    const s = summarize([
+    const s = sum([
       offer('p', 'a', 90, { availability: 'out_of_stock' }),
       offer('p', 'b', 120),
-      offer('p', 'c', 150, { availability: 'unknown', variantId: 'p-v2' }),
+      offer('p', 'c', 150, { availability: 'unknown' }),
     ])!;
-    expect(s.best.merchant).toBe('b');
+    expect(s.best.price).toBe(120);
     expect(s.minPrice).toBe(120);
     expect(s.maxPrice).toBe(150);
     expect(s.offerCount).toBe(3);
-    expect(s.variantCount).toBe(2);
     expect(s.merchantCount).toBe(3);
     expect(s.inStock).toBe(true);
   });
 
   it('si todo está agotado, usa todas las ofertas', () => {
-    const s = summarize([
+    const s = sum([
       offer('p', 'a', 90, { availability: 'out_of_stock' }),
       offer('p', 'b', 80, { availability: 'out_of_stock' }),
     ])!;
@@ -74,17 +83,17 @@ describe('summarize', () => {
   });
 
   it('a igual precio gana la vista más reciente', () => {
-    const s = summarize([
+    const s = sum([
       offer('p', 'a', 100, { lastSeenAt: new Date('2026-11-19T10:00:00Z') }),
       offer('p', 'b', 100, { lastSeenAt: new Date('2026-11-19T11:00:00Z') }),
     ])!;
-    expect(s.best.merchant).toBe('b');
+    expect(s.best.lastSeenMs).toBe(Date.parse('2026-11-19T11:00:00Z'));
   });
 });
 
 describe('rankListing (§8.3)', () => {
   it('umbral: sin productos con score > 0,05 responde vacío (nunca rellena)', () => {
-    const r = rankListing(
+    const r = rank(
       [cand('p1', 0.03)],
       [offer('p1', 'a', 100, { availability: 'unknown' })],
       { discountOnly: false },
@@ -95,7 +104,7 @@ describe('rankListing (§8.3)', () => {
   });
 
   it('la bonificación por stock puede superar el umbral y se suma al score', () => {
-    const r = rankListing(
+    const r = rank(
       [cand('p1', 0.03)],
       [offer('p1', 'a', 100)],
       { discountOnly: false },
@@ -105,7 +114,7 @@ describe('rankListing (§8.3)', () => {
   });
 
   it('ordena por score y desempata por precio mínimo', () => {
-    const r = rankListing(
+    const r = rank(
       [cand('p1', 0.2), cand('p2', 0.5), cand('p3', 0.2)],
       [offer('p1', 'a', 300), offer('p2', 'a', 500), offer('p3', 'a', 100)],
       { discountOnly: false },
@@ -115,7 +124,7 @@ describe('rankListing (§8.3)', () => {
   });
 
   it('productos sin ofertas vigentes no son resultados', () => {
-    const r = rankListing(
+    const r = rank(
       [cand('p1', 1), cand('p2', 1)],
       [offer('p2', 'a', 1)],
       { discountOnly: false },
@@ -129,7 +138,7 @@ describe('rankListing (§8.3)', () => {
     ['price_desc', ['p2', 'p1', 'p3']],
     ['discount', ['p1', 'p3', 'p2']],
   ] as const)('orden %s', (sort, expected) => {
-    const r = rankListing(
+    const r = rank(
       [cand('p1', 0.3), cand('p2', 0.2), cand('p3', 0.1)],
       [
         offer('p1', 'a', 200, { listPrice: 400 }),
@@ -143,7 +152,7 @@ describe('rankListing (§8.3)', () => {
   });
 
   it('filtro de tienda: precios y conteos solo de esas tiendas', () => {
-    const r = rankListing(
+    const r = rank(
       [cand('p1', 1)],
       [offer('p1', 'a', 100), offer('p1', 'b', 80), offer('p1', 'c', 120)],
       { discountOnly: false, merchants: ['a', 'c'] },
@@ -158,23 +167,13 @@ describe('rankListing (§8.3)', () => {
   });
 
   it('filtros de marca y precio', () => {
-    const r = rankListing(
+    const r = rank(
       [cand('p1', 1, 'kalora'), cand('p2', 1, 'nubrix'), cand('p3', 1, 'kalora')],
       [offer('p1', 'a', 100), offer('p2', 'a', 150), offer('p3', 'a', 500)],
       { discountOnly: false, brands: ['kalora'], minPrice: 50, maxPrice: 200 },
       text,
     );
     expect(r.items.map((i) => i.productId)).toEqual(['p1']);
-  });
-
-  it('discount_only: sin validación con historial (H5) no hay descuentos validados', () => {
-    const r = rankListing(
-      [cand('p1', 1)],
-      [offer('p1', 'a', 100, { listPrice: 200 })],
-      { discountOnly: true },
-      text,
-    );
-    expect(r.items).toEqual([]);
   });
 
   it('facetas disyuntivas: cada una ignora su propio filtro', () => {
@@ -185,7 +184,7 @@ describe('rankListing (§8.3)', () => {
       offer('p2', 'b', 200),
       offer('p3', 'a', 300),
     ];
-    const r = rankListing(
+    const r = rank(
       candidates,
       offers,
       { discountOnly: false, merchants: ['a'], brands: ['kalora'], maxPrice: 250 },
@@ -201,7 +200,7 @@ describe('rankListing (§8.3)', () => {
   });
 
   it('listados sin texto: no aplica el umbral y prioriza stock y número de tiendas', () => {
-    const r = rankListing(
+    const r = rank(
       [cand('p1', 0), cand('p2', 0), cand('p3', 0)],
       [
         offer('p1', 'a', 100, { availability: 'out_of_stock' }),
@@ -218,8 +217,8 @@ describe('rankListing (§8.3)', () => {
   it('el orden es estable entre ejecuciones (desempate por id)', () => {
     const candidates = [cand('pb', 1), cand('pa', 1)];
     const offers = [offer('pb', 'a', 100), offer('pa', 'a', 100)];
-    const once = rankListing(candidates, offers, { discountOnly: false }, text).items;
-    const twice = rankListing(
+    const once = rank(candidates, offers, { discountOnly: false }, text).items;
+    const twice = rank(
       [...candidates].reverse(),
       [...offers].reverse(),
       { discountOnly: false },
