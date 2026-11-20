@@ -1,0 +1,290 @@
+import {
+  freshnessOf,
+  type CategoriesResponse,
+  type CategoryListingResponse,
+  type ListingQuery,
+  type MerchantListingResponse,
+  type MerchantsResponse,
+  type SearchQuery,
+  type SearchResponse,
+  type SearchResult,
+} from '@encuanto/contracts';
+import type { DbClient } from '@encuanto/db';
+import { performance } from 'node:perf_hooks';
+import { NotFoundError } from '../../shared/errors';
+import type { Log } from '../../shared/log';
+import { loadBrandNames } from '../catalog/index';
+import { brandKey, buildBrandDictionary, type BrandDictionary } from '../normalization/index';
+import { cacheKey, type CachedListing, type ListingCache } from './cache';
+import { parseQuery } from './query';
+import { logSearchQuery } from './query-log';
+import {
+  discountPct,
+  rankListing,
+  type Candidate,
+  type ListingFilters,
+  type RankOptions,
+} from './rank';
+import {
+  findCategoryCandidates,
+  findLiveOffers,
+  findMerchantCandidates,
+  findTextCandidates,
+  getActiveMerchantBySlug,
+  getCategoryBySlug,
+  hydrate,
+  listActiveMerchants,
+  listCategoriesWithProducts,
+} from './search.repository';
+
+export interface SearchWeights {
+  /** `w_text` de §8.3 (por defecto 1). */
+  text: number;
+  /** `w_trgm` de §8.3 (por defecto 0,5). */
+  trgm: number;
+}
+
+export interface SearchDeps {
+  client: DbClient;
+  cache: ListingCache;
+  log: Log;
+  weights: SearchWeights;
+  /** Registrar cada búsqueda en `search_queries` (por defecto sí). */
+  logQueries?: boolean;
+  now?: () => Date;
+}
+
+/** El diccionario de marcas cambia poco: se recarga como mucho cada 5 minutos. */
+const BRANDS_TTL_MS = 5 * 60_000;
+
+type ListingPage = Pick<
+  SearchResponse,
+  'total' | 'page' | 'page_size' | 'results' | 'facets' | 'cache'
+>;
+
+export class SearchService {
+  private brands: { dict: BrandDictionary; loadedAt: number } | null = null;
+
+  constructor(private readonly deps: SearchDeps) {}
+
+  private now(): Date {
+    return this.deps.now?.() ?? new Date();
+  }
+
+  private async brandDictionary(): Promise<BrandDictionary> {
+    if (!this.brands || Date.now() - this.brands.loadedAt > BRANDS_TTL_MS) {
+      const dict = buildBrandDictionary(await loadBrandNames(this.deps.client.db));
+      this.brands = { dict, loadedAt: Date.now() };
+    }
+    return this.brands.dict;
+  }
+
+  /** GET /api/search (§7, §8.3, §8.6). */
+  async search(query: SearchQuery): Promise<SearchResponse> {
+    const started = performance.now();
+    const parsed = parseQuery(query.q, await this.brandDictionary());
+    const filters = toFilters(query);
+    const { listing, hit } = await this.cached(
+      'search',
+      { q: parsed.normalized, f: filters, s: query.sort },
+      async () => {
+        const candidates = await findTextCandidates(this.deps.client.sql, {
+          tsquery: parsed.tsquery,
+          normalized: parsed.normalized,
+          accessory: parsed.accessory,
+          wText: this.deps.weights.text,
+          wTrgm: this.deps.weights.trgm,
+        });
+        return this.rank(candidates, null, filters, { mode: 'text', sort: query.sort });
+      },
+    );
+    const page = await this.page(listing, hit, query);
+
+    if (this.deps.logQueries !== false) {
+      logSearchQuery(this.deps.client.db, this.deps.log, {
+        query: query.q,
+        filters: filtersForLog(query),
+        resultsCount: page.total,
+        latencyMs: performance.now() - started,
+      });
+    }
+
+    return {
+      query: query.q,
+      normalized: {
+        terms: parsed.terms,
+        brand: parsed.brand,
+        attributes: { ...parsed.attributes },
+      },
+      ...page,
+    };
+  }
+
+  /** GET /api/categories/:slug: productos de la categoría con filtros y orden. */
+  async browseCategory(slug: string, query: ListingQuery): Promise<CategoryListingResponse> {
+    const category = await getCategoryBySlug(this.deps.client.sql, slug);
+    if (!category) throw new NotFoundError('Categoría no encontrada');
+    const filters = toFilters(query);
+    const { listing, hit } = await this.cached(
+      'browse',
+      { k: 'category', id: category.id, f: filters, s: query.sort },
+      async () =>
+        this.rank(await findCategoryCandidates(this.deps.client.sql, category.id), null, filters, {
+          mode: 'browse',
+          sort: query.sort,
+        }),
+    );
+    return {
+      category: { slug: category.slug, name: category.name },
+      ...(await this.page(listing, hit, query)),
+    };
+  }
+
+  /** GET /api/merchants/:slug: productos con oferta vigente de la tienda, con su precio en ella. */
+  async browseMerchant(slug: string, query: ListingQuery): Promise<MerchantListingResponse> {
+    const merchant = await getActiveMerchantBySlug(this.deps.client.sql, slug);
+    if (!merchant) throw new NotFoundError('Tienda no encontrada');
+    // La tienda es fija: el filtro `merchants` no aplica en su propio listado.
+    const filters = toFilters({ ...query, merchants: undefined });
+    const { listing, hit } = await this.cached(
+      'browse',
+      { k: 'merchant', id: merchant.id, f: filters, s: query.sort },
+      async () =>
+        this.rank(
+          await findMerchantCandidates(this.deps.client.sql, merchant.id),
+          merchant.id,
+          filters,
+          {
+            mode: 'browse',
+            sort: query.sort,
+          },
+        ),
+    );
+    return {
+      merchant: { slug: merchant.slug, name: merchant.name },
+      ...(await this.page(listing, hit, query)),
+    };
+  }
+
+  async categories(): Promise<CategoriesResponse> {
+    return { categories: await listCategoriesWithProducts(this.deps.client.sql) };
+  }
+
+  async merchants(): Promise<MerchantsResponse> {
+    return { merchants: await listActiveMerchants(this.deps.client.sql) };
+  }
+
+  private async rank(
+    candidates: Candidate[],
+    merchantId: string | null,
+    filters: ListingFilters,
+    options: RankOptions,
+  ): Promise<CachedListing> {
+    const offers = await findLiveOffers(
+      this.deps.client.sql,
+      candidates.map((c) => c.productId),
+      merchantId,
+    );
+    const { items, facets } = rankListing(candidates, offers, filters, options);
+    return { generatedAt: this.now().toISOString(), items, facets };
+  }
+
+  /** Lee el conjunto de la caché (§8.6) o lo calcula y lo guarda. Sin Redis, siempre calcula. */
+  private async cached(
+    prefix: 'search' | 'browse',
+    identity: unknown,
+    compute: () => Promise<CachedListing>,
+  ): Promise<{ listing: CachedListing; hit: boolean }> {
+    const version = await this.deps.cache.version();
+    const key = version === null ? null : cacheKey(prefix, version, identity);
+    if (key) {
+      const hit = await this.deps.cache.get(key);
+      if (hit) return { listing: hit, hit: true };
+    }
+    const listing = await compute();
+    if (key) await this.deps.cache.set(key, listing);
+    return { listing, hit: false };
+  }
+
+  /** Recorta la página del conjunto ordenado y la completa con los datos vigentes. */
+  private async page(
+    listing: CachedListing,
+    hit: boolean,
+    query: ListingQuery,
+  ): Promise<ListingPage> {
+    const start = (query.page - 1) * query.page_size;
+    const slice = listing.items.slice(start, start + query.page_size);
+    const { products, offers } = await hydrate(
+      this.deps.client.sql,
+      slice.map((i) => i.productId),
+      slice.map((i) => i.bestOfferId),
+    );
+    const now = this.now();
+    const results: SearchResult[] = [];
+    for (const item of slice) {
+      const product = products.get(item.productId);
+      const offer = offers.get(item.bestOfferId);
+      if (!product || !offer) continue;
+      const freshness = freshnessOf(offer.lastSeenAt, now);
+      if (freshness === 'hidden') continue;
+      results.push({
+        product_id: product.id,
+        name: product.name,
+        brand: product.brand,
+        category:
+          product.categorySlug && product.categoryName
+            ? { slug: product.categorySlug, name: product.categoryName }
+            : null,
+        image_url: product.imageUrl ?? offer.imageUrl,
+        variant_count: item.variantCount,
+        offer_count: item.offerCount,
+        merchant_count: item.merchantCount,
+        min_price: item.minPrice,
+        max_price: item.maxPrice,
+        best_offer: {
+          offer_id: offer.id,
+          merchant: offer.merchant,
+          merchant_name: offer.merchantName,
+          price: offer.price,
+          list_price: offer.listPrice,
+          discount_pct: discountPct(offer.price, offer.listPrice),
+          discount_validated: false,
+          in_stock: offer.availability === 'in_stock',
+          last_seen_at: offer.lastSeenAt.toISOString(),
+          stale: freshness === 'stale',
+        },
+      });
+    }
+    return {
+      total: listing.items.length,
+      page: query.page,
+      page_size: query.page_size,
+      results,
+      facets: listing.facets,
+      cache: { hit, generated_at: listing.generatedAt },
+    };
+  }
+}
+
+/** Filtros canónicos (ordenados), para que la misma búsqueda dé la misma clave de caché. */
+function toFilters(query: ListingQuery): ListingFilters {
+  const sorted = (list?: string[]) => (list?.length ? [...new Set(list)].sort() : undefined);
+  return {
+    merchants: sorted(query.merchants),
+    brands: sorted(query.brands?.map(brandKey).filter(Boolean)),
+    minPrice: query.min_price,
+    maxPrice: query.max_price,
+    discountOnly: query.discount_only,
+  };
+}
+
+/** Filtros que se guardan en `search_queries`: solo valores del catálogo, nada del usuario. */
+function filtersForLog(query: SearchQuery): Record<string, unknown> {
+  const out: Record<string, unknown> = { sort: query.sort, page: query.page };
+  if (query.merchants?.length) out.merchants = query.merchants;
+  if (query.brands?.length) out.brands = query.brands.map(brandKey);
+  if (query.min_price !== undefined) out.min_price = query.min_price;
+  if (query.max_price !== undefined) out.max_price = query.max_price;
+  if (query.discount_only) out.discount_only = true;
+  return out;
+}

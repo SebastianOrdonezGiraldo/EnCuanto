@@ -21,6 +21,13 @@ const envSchema = z.object({
    * no se registran. Mínimo 32 caracteres.
    */
   ADMIN_TOKEN: z.string().min(32).optional(),
+  // Búsqueda (H2, §8.3 y §8.6).
+  /** Peso de `ts_rank_cd` en la puntuación. */
+  SEARCH_W_TEXT: z.coerce.number().min(0).max(10).default(1),
+  /** Peso de la similitud de trigramas en la puntuación. */
+  SEARCH_W_TRGM: z.coerce.number().min(0).max(10).default(0.5),
+  /** TTL de la caché de búsqueda en Redis (segundos). */
+  SEARCH_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(86_400).default(600),
 });
 
 export type Config = z.infer<typeof envSchema>;
