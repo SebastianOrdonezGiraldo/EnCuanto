@@ -16,6 +16,7 @@ export {
   createMatchingQueue,
   createMatchingWorker,
   enqueueMatching,
+  logMatchingWorkerEvents,
   MATCHING_QUEUE,
   type MatchingJobData,
 } from './queue';

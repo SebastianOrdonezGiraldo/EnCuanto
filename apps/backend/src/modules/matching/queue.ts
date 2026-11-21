@@ -1,4 +1,5 @@
 import { Queue, Worker, type ConnectionOptions, type Job } from 'bullmq';
+import type { Log } from '../../shared/log';
 
 /** Cola de matching (§5: BullMQ). Cada job empareja todas las ofertas pendientes. */
 export const MATCHING_QUEUE = 'offer-matching';
@@ -52,5 +53,18 @@ export function createMatchingWorker(
       concurrency: 1,
       ...(prefix ? { prefix } : {}),
     },
+  );
+}
+
+/**
+ * Registra `failed` y `error` del worker de matching. Sin un listener de `error`, un fallo de
+ * conexión con Redis es un evento no manejado y Node termina el proceso (también el worker de sync).
+ */
+export function logMatchingWorkerEvents(worker: Worker<MatchingJobData>, log: Log): void {
+  worker.on('failed', (job, err) =>
+    log.warn({ job_id: job?.id, err: err.message.slice(0, 300) }, 'matching: job falló'),
+  );
+  worker.on('error', (err) =>
+    log.error({ err: err.message.slice(0, 300) }, 'matching: error del worker'),
   );
 }

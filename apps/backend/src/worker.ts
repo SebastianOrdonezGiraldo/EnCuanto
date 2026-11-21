@@ -14,6 +14,7 @@ import {
   createMatchingQueue,
   createMatchingWorker,
   enqueueMatching,
+  logMatchingWorkerEvents,
   runMatching,
 } from './modules/matching/index';
 import { loadConfig } from './shared/config';
@@ -67,9 +68,7 @@ logWorkerEvents(worker, log);
 const matchingWorker = createMatchingWorker(connection, (_job, signal) =>
   runMatching({ db, log, onCatalogChanged: deps.onCatalogChanged }, { signal }),
 );
-matchingWorker.on('failed', (job, err) =>
-  log.warn({ job_id: job?.id, err: err.message.slice(0, 300) }, 'matching: job falló'),
-);
+logMatchingWorkerEvents(matchingWorker, log);
 // Al arrancar se recogen las pendientes que dejara un proceso anterior.
 await enqueueMatching(matchingQueue, { trigger: 'startup' });
 
