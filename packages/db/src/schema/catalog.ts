@@ -19,6 +19,8 @@ export interface VariantAttributes {
   ram_gb?: number;
   capacity_l?: number;
   screen_in?: number;
+  /** Capacidad en kilos (lavadoras, secadoras). Ampliación de §6 en H3. */
+  weight_kg?: number;
 }
 
 const tsvector = customType<{ data: string }>({ dataType: () => 'tsvector' });
@@ -78,6 +80,11 @@ export const products = pgTable(
       sql`public.immutable_unaccent(lower(${t.canonicalName})) gin_trgm_ops`,
     ),
     index('products_brand_id_idx').on(t.brandId),
+    // Matching nivel 2 (§8.2, H3): misma marca y mismo modelo, sin guiones ni espacios.
+    index('products_brand_model_key_idx').on(
+      t.brandId,
+      sql`regexp_replace(upper(${t.modelNumber}), '[^A-Z0-9]', '', 'g')`,
+    ),
     index('products_category_id_idx').on(t.categoryId),
   ],
 );

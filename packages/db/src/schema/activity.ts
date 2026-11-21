@@ -9,6 +9,7 @@ import {
   real,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 import { productVariants } from './catalog';
@@ -31,12 +32,20 @@ export const matchReviews = pgTable(
       .notNull()
       .references(() => productVariants.id, { onDelete: 'cascade' }),
     score: real().notNull(),
+    /** Por qué no se emparejó solo (`similitud_media`, `variante_ambigua`, `accesorio`…). */
+    reason: text().notNull().default('similitud_media'),
     status: matchReviewStatus().notNull().default('pending'),
     reviewedBy: uuid().references(() => users.id, { onDelete: 'set null' }),
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     reviewedAt: timestamp({ withTimezone: true }),
   },
-  (t) => [index('match_reviews_status_idx').on(t.status, t.createdAt)],
+  (t) => [
+    index('match_reviews_status_idx').on(t.status, t.createdAt),
+    // Una sola revisión abierta por oferta.
+    uniqueIndex('match_reviews_offer_pending_unique')
+      .on(t.offerId)
+      .where(sql`${t.status} = 'pending'`),
+  ],
 );
 
 /** Consultas de búsqueda (§6). Sin IP en claro. Dueño: módulo `search` (H2). */

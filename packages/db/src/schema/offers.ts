@@ -9,6 +9,7 @@ import {
   pgTable,
   primaryKey,
   real,
+  smallint,
   text,
   timestamp,
   unique,
@@ -69,11 +70,19 @@ export const offers = pgTable(
     brand: text(),
     modelNumber: text(),
     attributes: jsonb().$type<VariantAttributes>().notNull().default({}),
+    /** Categoría tal como la da la fuente (p. ej. "Tecnología > Celulares"). La usa el matching (H3) al crear fichas. */
+    category: text(),
     firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     lastChangedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
     matchStatus: matchStatus().notNull().default('pending'),
     matchConfidence: real(),
+    /**
+     * Nivel de §8.2 que decidió el enlace automático: 1 GTIN, 2 marca + modelo, 3 marca +
+     * trigramas, 5 ficha nueva creada a partir de la oferta. Nulo si está pendiente o la decidió
+     * una persona (`manual`).
+     */
+    matchLevel: smallint(),
   },
   (t) => [
     unique('offers_merchant_external_unique').on(t.merchantId, t.externalId),
@@ -92,6 +101,10 @@ export const offers = pgTable(
     ),
     index('offers_gtin_idx').on(t.gtin),
     index('offers_match_status_idx').on(t.matchStatus),
+    // Recorrido de las pendientes del matching en orden de llegada (H3).
+    index('offers_match_pending_idx')
+      .on(t.firstSeenAt, t.id)
+      .where(sql`${t.matchStatus} = 'pending'`),
     index('offers_last_seen_at_idx').on(t.lastSeenAt),
     check('offers_price_positive', sql`${t.price} > 0`),
     check(
