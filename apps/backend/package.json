@@ -12,7 +12,8 @@
     "start:worker": "node dist/worker.js",
     "seed": "tsx --env-file-if-exists=../../.env src/dev/seed.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench:search": "tsx --env-file-if-exists=../../.env src/dev/bench-search.ts"
   },
   "dependencies": {
     "@encuanto/contracts": "workspace:*",

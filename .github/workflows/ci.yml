@@ -16,11 +16,11 @@ jobs:
   linux:
     name: Linux (lint, typecheck, tests con Postgres y Redis, build)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16
         env:
           POSTGRES_USER: encuanto
           POSTGRES_PASSWORD: encuanto
@@ -54,7 +54,19 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm db:migrate
       - run: pnpm test
+      # Criterio de H2: p95 de /api/search < 150 ms con 50.000 ofertas sintéticas.
+      - run: pnpm bench:search
       - run: pnpm build
+      # e2e de búsqueda (H2): seed sintético + API y web compiladas.
+      - run: pnpm db:seed
+      - run: pnpm --filter @encuanto/web exec playwright install --with-deps chromium
+      - run: pnpm e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report
+          retention-days: 7
 
   windows:
     name: Windows (lint, typecheck, tests unitarios y build)

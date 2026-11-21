@@ -1,6 +1,7 @@
 import { createDb } from '@encuanto/db';
 import { buildApp } from './app';
 import { bullConnection, createSyncQueue, enqueueSync } from './modules/ingestion/index';
+import { ListingCache, SearchService } from './modules/search/index';
 import { loadConfig } from './shared/config';
 import { loggerOptions } from './shared/logger';
 import { createRedis } from './shared/redis';
@@ -12,6 +13,23 @@ const db = createDb(config.DATABASE_URL);
 const redis = createRedis(config.REDIS_URL);
 // La cola solo hace falta para el sync manual del admin.
 const syncQueue = config.ADMIN_TOKEN ? createSyncQueue(bullConnection(config.REDIS_URL)) : null;
+
+// La caché es opcional: si Redis cae, la búsqueda sigue funcionando sin caché.
+const searchLog = {
+  info: (obj: object, msg?: string) => app.log.info(obj, msg),
+  warn: (obj: object, msg?: string) => app.log.warn(obj, msg),
+  error: (obj: object, msg?: string) => app.log.error(obj, msg),
+};
+const search = new SearchService({
+  client: db,
+  cache: new ListingCache(
+    config.SEARCH_CACHE_TTL_SECONDS > 0 ? redis : null,
+    config.SEARCH_CACHE_TTL_SECONDS,
+    searchLog,
+  ),
+  log: searchLog,
+  weights: { text: config.SEARCH_W_TEXT, trgm: config.SEARCH_W_TRGM },
+});
 
 const app = buildApp(
   {
@@ -32,6 +50,8 @@ const app = buildApp(
             enqueueSync: (slug) => enqueueSync(syncQueue, slug, 'admin'),
           }
         : undefined,
+    search,
+    outbound: { client: db },
   },
   { logger: loggerOptions(config) },
 );

@@ -8,8 +8,8 @@ import {
 import type { Database, ProviderSyncRun } from '@encuanto/db';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import type { z } from 'zod';
 import { NotFoundError, UnauthorizedError, ValidationError } from '../../shared/errors';
+import { parseOrThrow } from '../../shared/validation';
 import {
   countOffersByMerchant,
   latestRunByMerchant,
@@ -28,15 +28,7 @@ export interface AdminDeps {
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 
-function parse<T extends z.ZodType>(schema: T, value: unknown): z.infer<T> {
-  const parsed = schema.safeParse(value);
-  if (!parsed.success) {
-    throw new ValidationError('Parámetros inválidos', {
-      issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
-    });
-  }
-  return parsed.data;
-}
+const parse = parseOrThrow;
 
 const iso = (d: Date | null) => (d ? d.toISOString() : null);
 

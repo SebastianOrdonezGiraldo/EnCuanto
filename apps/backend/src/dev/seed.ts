@@ -1,17 +1,16 @@
 import { createDb } from '@encuanto/db';
-import path from 'node:path';
+import { Redis } from 'ioredis';
 import { parseArgs } from 'node:util';
-import { upsertBrands } from '../modules/catalog/index';
-import { countOffersByMerchant, runSync } from '../modules/ingestion/index';
-import { upsertMerchant } from '../modules/merchants/index';
+import { countOffersByMerchant } from '../modules/ingestion/index';
+import { CATALOG_VERSION_KEY } from '../shared/catalog-version';
 import { loadConfig } from '../shared/config';
-import { silentLog } from '../shared/log';
 import { resolveFixturesDir } from '../shared/paths';
-import { SYNTHETIC_BRANDS, writeSyntheticFeeds } from './synthetic';
+import { seedSynthetic } from './seed-synthetic';
 
 /**
- * Seed sintético de H1: genera los feeds de 3 comerciantes ficticios (≥ 2.000 ofertas) y los
- * sincroniza con la misma ingesta que usa el worker.
+ * Seed sintético: genera los feeds de 3 comerciantes ficticios (≥ 2.000 ofertas), los
+ * sincroniza con la misma ingesta que usa el worker (H1) y crea las fichas de producto que
+ * la búsqueda necesita (H2; hasta H3 no hay matching que las cree).
  *
  *   pnpm db:seed              # día 0
  *   pnpm db:seed --day 3      # simula 3 días: ~12 % de precios cambia cada día
@@ -30,25 +29,43 @@ const fixturesDir = resolveFixturesDir(config.FIXTURES_DIR);
 const client = createDb(config.DATABASE_URL, { max: 4 });
 const out = (line: string) => process.stdout.write(`${line}\n`);
 
+/** Invalida la caché de búsqueda (§8.6). Sin Redis no hay caché que invalidar: se avisa y sigue. */
+async function bumpCatalogVersion(url: string): Promise<void> {
+  const redis = new Redis(url, {
+    lazyConnect: true,
+    maxRetriesPerRequest: 1,
+    connectTimeout: 2000,
+  });
+  try {
+    await redis.connect();
+    out(`Versión de catálogo: ${await redis.incr(CATALOG_VERSION_KEY)}`);
+  } catch {
+    out('Redis no disponible: la caché de búsqueda caducará sola (10 min)');
+  } finally {
+    redis.disconnect();
+  }
+}
+
 try {
-  const feeds = writeSyntheticFeeds({ outDir: path.join(fixturesDir, 'generado'), day });
+  const { feeds, catalog } = await seedSynthetic(client, {
+    fixturesDir,
+    day,
+    onSync: (r) =>
+      out(
+        `${r.merchantSlug.padEnd(18)} ${r.status}  vistas ${r.itemsSeen}  nuevas ${r.itemsInserted}  ` +
+          `cambios de precio ${r.itemsPriceChanged}  cuarentena ${r.itemsQuarantined}`,
+      ),
+  });
   out(
     `Feeds sintéticos del día ${day}: ${feeds.validOffers} ofertas válidas + ${feeds.invalidOffers} inválidas`,
   );
-  await upsertBrands(client.db, SYNTHETIC_BRANDS);
-
-  for (const m of feeds.merchants) {
-    await upsertMerchant(client.db, { ...m, active: true });
-    const r = await runSync({ db: client, fixturesDir, log: silentLog }, m.slug, {
-      trigger: 'seed',
-    });
-    out(
-      `${m.slug.padEnd(18)} ${r.status}  vistas ${r.itemsSeen}  nuevas ${r.itemsInserted}  ` +
-        `cambios de precio ${r.itemsPriceChanged}  cuarentena ${r.itemsQuarantined}`,
-    );
-  }
   const total = [...(await countOffersByMerchant(client.db)).values()].reduce((a, b) => a + b, 0);
   out(`Ofertas en la BD: ${total}`);
+  out(
+    `Fichas: ${catalog.products} productos, ${catalog.variants} variantes, ` +
+      `${catalog.linked} ofertas enlazadas en esta ejecución`,
+  );
+  await bumpCatalogVersion(config.REDIS_URL);
 } finally {
   await client.close();
 }

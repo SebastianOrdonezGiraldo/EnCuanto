@@ -46,6 +46,12 @@ const COLORS = ['Negro', 'Blanco', 'Gris', 'Azul', 'Verde', 'Plata', 'Rojo', 'Do
 
 export interface SyntheticVariant {
   key: string;
+  /** Producto (modelo) al que pertenece la variante: `p<n>`. */
+  productKey: string;
+  /** Nombre del producto sin los atributos de la variante (H2: ficha conocida del seed). */
+  productName: string;
+  /** Atributos de la variante tal como aparecen en el título ("256GB 8GB RAM Negro"). */
+  label: string;
   brand: string;
   category: string;
   title: string;
@@ -187,6 +193,9 @@ export function syntheticCatalog(seed = 2026, products = 420): SyntheticVariant[
     for (const v of variants) {
       out.push({
         key: `p${p}-${out.length}`,
+        productKey: `p${p}`,
+        productName: category.title(brand, line, model, '').replace(/\s+/g, ' ').trim(),
+        label: v.label,
         brand,
         category: category.name,
         title: category.title(brand, line, model, v.label),
@@ -234,6 +243,15 @@ interface Offer {
   brand: string;
   category: string;
   inStock: boolean;
+}
+
+/**
+ * Índice en el catálogo maestro de la variante de una oferta sintética: los `external_id` son
+ * `<prefijo>-<índice>` (`AUR-00042`). Devuelve null si el id no tiene esa forma.
+ */
+export function syntheticVariantIndex(externalId: string): number | null {
+  const m = /^[A-Z]+-(\d{5,})$/.exec(externalId);
+  return m ? Number(m[1]) : null;
 }
 
 function offersFor(
@@ -310,6 +328,8 @@ export interface GenerateOptions {
  */
 export function writeSyntheticFeeds(options: GenerateOptions): {
   merchants: SyntheticMerchant[];
+  /** Catálogo maestro del que salen las ofertas (el seed crea con él las fichas de H2). */
+  catalog: SyntheticVariant[];
   validOffers: number;
   invalidOffers: number;
 } {
@@ -414,6 +434,7 @@ export function writeSyntheticFeeds(options: GenerateOptions): {
   invalid += pacificoBad.length;
 
   return {
+    catalog,
     validOffers: valid,
     invalidOffers: invalid,
     merchants: [

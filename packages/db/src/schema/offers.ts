@@ -14,7 +14,7 @@ import {
   unique,
   uuid,
 } from 'drizzle-orm/pg-core';
-import { productVariants, type VariantAttributes } from './catalog';
+import { products, productVariants, type VariantAttributes } from './catalog';
 import { merchants } from './merchants';
 
 export const offerCondition = pgEnum('offer_condition', ['new', 'used', 'refurbished']);
@@ -48,6 +48,12 @@ export const offers = pgTable(
       .notNull()
       .references(() => merchants.id, { onDelete: 'cascade' }),
     variantId: uuid().references(() => productVariants.id, { onDelete: 'set null' }),
+    /**
+     * Producto de `variant_id`, desnormalizado para la búsqueda (§8.3): los listados leen las
+     * ofertas de cientos de productos y así no pasan por `product_variants`. Lo mantienen
+     * triggers de la migración 0004; la aplicación no lo escribe.
+     */
+    productId: uuid().references(() => products.id, { onDelete: 'set null' }),
     externalId: text().notNull(),
     titleRaw: text().notNull(),
     url: text().notNull(),
@@ -72,6 +78,18 @@ export const offers = pgTable(
   (t) => [
     unique('offers_merchant_external_unique').on(t.merchantId, t.externalId),
     index('offers_variant_id_idx').on(t.variantId),
+    // Cubre la lectura de ofertas vigentes de los listados (index-only scan, §8.3).
+    index('offers_product_listing_idx').on(
+      t.productId,
+      t.merchantId,
+      t.price,
+      t.lastSeenAt,
+      t.availability,
+      t.currency,
+      t.listPrice,
+      t.id,
+      t.variantId,
+    ),
     index('offers_gtin_idx').on(t.gtin),
     index('offers_match_status_idx').on(t.matchStatus),
     index('offers_last_seen_at_idx').on(t.lastSeenAt),

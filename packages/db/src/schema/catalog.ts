@@ -72,6 +72,11 @@ export const products = pgTable(
   (t) => [
     index('products_search_tsv_idx').using('gin', t.searchTsv),
     index('products_canonical_name_trgm_idx').using('gin', t.canonicalName.op('gin_trgm_ops')),
+    // Búsqueda (H2, §8.3): la similitud de trigramas se calcula sin tildes ni mayúsculas.
+    index('products_name_unaccent_trgm_idx').using(
+      'gin',
+      sql`public.immutable_unaccent(lower(${t.canonicalName})) gin_trgm_ops`,
+    ),
     index('products_brand_id_idx').on(t.brandId),
     index('products_category_id_idx').on(t.categoryId),
   ],
