@@ -179,7 +179,11 @@ export async function requestCatalogInvalidation(tx: DbExecutor): Promise<void> 
     .values({ id: 1 })
     .onConflictDoUpdate({
       target: catalogInvalidations.id,
-      set: { generation: sql`${catalogInvalidations.generation} + 1`, requestedAt: sql`now()` },
+      // Valor nuevo de la secuencia (nunca uno ya usado, ni tras borrar y recrear la fila).
+      set: {
+        generation: sql`nextval(pg_get_serial_sequence('catalog_invalidations', 'generation'))`,
+        requestedAt: sql`now()`,
+      },
     });
 }
 

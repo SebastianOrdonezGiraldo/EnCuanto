@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  bigserial,
   index,
   integer,
   jsonb,
@@ -110,11 +111,15 @@ export const outboundClicks = pgTable(
  * Invalidación de la caché del catálogo pendiente (§8.6) por decisiones de matching. Se escribe
  * en la misma transacción que la decisión, así que no se pierde si la invalidación (Redis) falla
  * o el proceso se cae después de confirmar: la siguiente ejecución del matching la reintenta.
- * Una sola fila; `generation` sube con cada cambio para no borrar uno que llegue mientras se
- * invalida.
+ * Una sola fila; `generation` toma un valor nuevo de la secuencia con cada cambio, para no borrar
+ * uno que llegue mientras se invalida.
  */
 export const catalogInvalidations = pgTable('catalog_invalidations', {
   id: smallint().primaryKey().default(1),
-  generation: integer().notNull().default(1),
+  /**
+   * De una secuencia que no se reinicia al borrar la fila: una marca recreada nunca repite la
+   * generación de una anterior, así que limpiar la vieja no borra la nueva.
+   */
+  generation: bigserial({ mode: 'number' }).notNull(),
   requestedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 });

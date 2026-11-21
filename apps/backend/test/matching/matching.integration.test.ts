@@ -18,7 +18,9 @@ import { buildApp } from '../../src/app';
 import { createIsolatedDatabase, type IsolatedDatabase } from '../../src/dev/isolated-db';
 import { runSync } from '../../src/modules/ingestion/index';
 import {
+  flushCatalogInvalidation,
   listReviews,
+  requestCatalogInvalidation,
   resolveReview,
   runMatching,
   sanitizedProcessor,
@@ -710,6 +712,53 @@ describe.skipIf(!DATABASE_URL)('matching de extremo a extremo (H3)', () => {
     expect(next.processed).toBe(0);
     expect(bumped).toBe(1);
     expect(await client.db.select().from(catalogInvalidations)).toHaveLength(0);
+  });
+
+  it('una limpieza antigua no borra la marca de un cambio posterior (ejecuciones concurrentes)', async () => {
+    const generation = async () => {
+      const rows = await client.db.select().from(catalogInvalidations);
+      return rows[0]?.generation ?? null;
+    };
+    const barrier = () => {
+      let open!: () => void;
+      const opened = new Promise<void>((r) => (open = r));
+      return { open, opened };
+    };
+    const mark = () => client.db.transaction((tx) => requestCatalogInvalidation(tx));
+    let version = 0;
+    const flush = (onCatalogChanged: () => Promise<void>) =>
+      flushCatalogInvalidation({ db: client, onCatalogChanged });
+
+    // 1. Hay una marca.
+    await mark();
+    const first = await generation();
+    expect(first).not.toBeNull();
+    // 2. B la lee, invalida y se queda parada antes de borrar.
+    const bInvalidated = barrier();
+    const bRelease = barrier();
+    const b = flush(async () => {
+      version++;
+      bInvalidated.open();
+      await bRelease.opened;
+    });
+    await bInvalidated.opened;
+    // 3. A invalida y la borra.
+    expect(await flush(async () => void version++)).toBe(true);
+    expect(await generation()).toBeNull();
+    // 4. Un cambio nuevo crea otra marca, con otra generación.
+    await mark();
+    const second = await generation();
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
+    // 5. B termina: no borra la marca nueva.
+    bRelease.open();
+    expect(await b).toBe(true);
+    expect(await generation()).toBe(second);
+    // Una ejecución posterior invalida el cambio pendiente y limpia la marca.
+    const before = version;
+    expect(await flush(async () => void version++)).toBe(true);
+    expect(version).toBe(before + 1);
+    expect(await generation()).toBeNull();
   });
 
   it('admin: lista la cola y aplica decisiones con validación', async () => {

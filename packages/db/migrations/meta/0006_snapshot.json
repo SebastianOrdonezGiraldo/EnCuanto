@@ -1,5 +1,5 @@
 {
-  "id": "0e2ade4d-df90-4191-8497-642af773c86f",
+  "id": "5ad43d7f-38f4-40b8-a282-b1f52685ff8b",
   "prevId": "e766a2f7-0fd2-4d2c-a921-5c5f519d17a0",
   "version": "7",
   "dialect": "postgresql",
@@ -140,10 +140,9 @@
         },
         "generation": {
           "name": "generation",
-          "type": "integer",
+          "type": "bigserial",
           "primaryKey": false,
-          "notNull": true,
-          "default": 1
+          "notNull": true
         },
         "requested_at": {
           "name": "requested_at",

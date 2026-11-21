@@ -9,6 +9,7 @@ export { findCandidates } from './candidates.repository';
 export {
   flushCatalogInvalidation,
   MATCHING_LOCK,
+  requestCatalogInvalidation,
   runMatching,
   type MatchingDeps,
   type MatchingResult,
