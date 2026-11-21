@@ -223,3 +223,16 @@ describe('rankListing (§8.3)', () => {
     expect(twice).toEqual(once);
   });
 });
+
+describe('groupOffers: validez para la caché (§8.5)', () => {
+  it('es lo que le queda a la oferta más antigua del grupo para dejar de estar vigente', () => {
+    const [g] = groupOffers(
+      [
+        offer('p', 'a', 100, { lastSeenAt: new Date(NOW.getTime() - 71 * 3_600_000) }),
+        offer('p', 'a', 200),
+      ],
+      NOW.getTime(),
+    );
+    expect(g!.validForSeconds).toBe(3600);
+  });
+});

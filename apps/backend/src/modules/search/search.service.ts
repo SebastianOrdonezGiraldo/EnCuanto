@@ -199,7 +199,16 @@ export class SearchService {
       discountOnly: filters.discountOnly,
     });
     const { items, facets } = rankListing(candidates, groups, filters, options);
-    return { generatedAt: this.now().toISOString(), items, facets };
+    const now = this.now();
+    // Validez medida por la BD (la misma que decide qué es vigente), anclada al reloj de la API.
+    const validFor = groups.reduce((min, g) => Math.min(min, g.validForSeconds), Infinity);
+    return {
+      generatedAt: now.toISOString(),
+      validUntil:
+        validFor === Infinity ? null : new Date(now.getTime() + validFor * 1000).toISOString(),
+      items,
+      facets,
+    };
   }
 
   /** Lee el conjunto de la caché (§8.6) o lo calcula y lo guarda. Sin Redis, siempre calcula. */
@@ -211,11 +220,11 @@ export class SearchService {
     const version = await this.deps.cache.version();
     const key = version === null ? null : cacheKey(prefix, version, identity);
     if (key) {
-      const hit = await this.deps.cache.get(key);
+      const hit = await this.deps.cache.get(key, this.now());
       if (hit) return { listing: hit, hit: true };
     }
     const listing = await compute();
-    if (key) await this.deps.cache.set(key, listing);
+    if (key) await this.deps.cache.set(key, listing, this.now());
     return { listing, hit: false };
   }
 

@@ -43,6 +43,29 @@ describe('parseQuery', () => {
 });
 
 describe('scrubQuery (search_queries sin datos personales)', () => {
+  it.each([
+    ['nevera teléfono +57 300 123 4567', 'nevera telefono [numero]'],
+    ['nevera 300 123 4567', 'nevera [numero]'],
+    ['nevera 300.123.4567', 'nevera [numero]'],
+    ['nevera 300-123-4567', 'nevera [numero]'],
+    ['nevera (601) 555-1234', 'nevera [numero]'],
+    ['nevera (+57) 3001234567', 'nevera [numero]'],
+    ['nevera cc 1.023.456.789', 'nevera cc [numero]'],
+    ['nevera 300\u00a0123\u00a04567', 'nevera [numero]'],
+  ])('redacta teléfonos y documentos con separadores: %s', (raw, expected) => {
+    expect(scrubQuery(raw)).toBe(expected);
+  });
+
+  it.each([
+    ['televisor 55 pulgadas 4k', 'televisor 55 pulgadas 4k'],
+    ['celular 256gb 8gb ram', 'celular 256gb 8gb ram'],
+    ['ka-4018s', 'ka 4018s'],
+    ['lavadora 17 kg 2024', 'lavadora 17 kg 2024'],
+    ['nevera 300 litros', 'nevera 300 litros'],
+  ])('conserva capacidades y modelos: %s', (raw, expected) => {
+    expect(scrubQuery(raw)).toBe(expected);
+  });
+
   it('quita correos y números largos antes de normalizar', () => {
     expect(scrubQuery('Celular para juan.perez@correo.example 3001234567')).toBe(
       'celular para [email] [numero]',

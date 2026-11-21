@@ -4,8 +4,6 @@ import type { Candidate, LiveOffer, MerchantGroup } from './rank';
 
 type Sql = DbClient['sql'];
 
-/** Máximo de productos candidatos que salen de la BD por consulta de texto. */
-export const MAX_CANDIDATES = 1500;
 /** Penalización de accesorio (§8.3). */
 export const ACCESSORY_PENALTY = 0.5;
 
@@ -41,6 +39,7 @@ interface ListingRow {
   max_all: number;
   offer_count: number;
   in_stock: boolean;
+  valid_for_s: number;
 }
 
 /** Condición de oferta vigente (§8.5) sobre `offers o` y `merchants m`. */
@@ -64,6 +63,10 @@ const liveOffer = (sql: Sql) => sql`
  * donde el documento es `search_tsv` más la marca del producto cuando es la de la consulta.
  *
  * La bonificación por stock y el umbral se aplican después, en rank.ts.
+ *
+ * Entran todos los productos que coinciden, sin recorte: los filtros y el orden se aplican después
+ * sobre el universo completo (un recorte previo dejaba fuera, por ejemplo, el producto más barato
+ * o el único de una marca, y el total no era real).
  *
  * Ofertas vigentes (§8.5): tienda activa, en COP y vistas hace ≤ 72 h. Se leen por
  * `offers.product_id` con el índice cubriente `offers_product_listing_idx` (index-only scan), y
@@ -99,9 +102,7 @@ export async function findListing(
         left join categories c on c.id = p.category_id
        where (q.tsq is not null and p.search_tsv @@ q.tsq)
           or q.text <% public.immutable_unaccent(lower(p.canonical_name))
-          or p.brand_id = q.brand_id
-       order by text_score desc, p.id
-       limit ${MAX_CANDIDATES}`;
+          or p.brand_id = q.brand_id`;
   } else if (source.kind === 'category') {
     cand = sql`
       select p.id, p.brand_id, 0::float8 as text_score
@@ -132,7 +133,8 @@ export async function findListing(
              max(price) filter (where not oos) over w as max_buyable,
              max(price) over w as max_all,
              count(*) over w as offer_count,
-             bool_or(ins) over w as in_stock
+             bool_or(ins) over w as in_stock,
+             min(last_seen_at) over w as oldest_seen
         from live
       window w as (partition by product_id, merchant_id)
        order by product_id, merchant_id, oos, price, last_seen_at desc, id
@@ -142,7 +144,9 @@ export async function findListing(
            grp.id as best_id, grp.price::float8 as best_price, grp.list_price::float8 as best_list_price,
            grp.oos as best_oos, (extract(epoch from grp.last_seen_at) * 1000)::float8 as best_seen_ms,
            grp.max_buyable::float8 as max_buyable, grp.max_all::float8 as max_all,
-           grp.offer_count::int as offer_count, grp.in_stock
+           grp.offer_count::int as offer_count, grp.in_stock,
+           extract(epoch from grp.oldest_seen + make_interval(hours => ${FRESHNESS_HIDDEN_HOURS}) - now())::float8
+             as valid_for_s
       from grp
       join cand on cand.id = grp.product_id
       join merchants m on m.id = grp.merchant_id
@@ -176,6 +180,7 @@ export async function findListing(
       maxAll: Number(r.max_all),
       offerCount: r.offer_count,
       inStock: r.in_stock,
+      validForSeconds: Number(r.valid_for_s),
     });
   }
   return { candidates, groups };

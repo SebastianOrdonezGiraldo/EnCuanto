@@ -349,6 +349,13 @@ describe.skipIf(!DATABASE_URL)('búsqueda y /go (H2)', () => {
   it('guarda la consulta en search_queries sin datos personales y no la escribe en los logs', async () => {
     const q = 'nevera para ana.gomez@correo.example 3105551234';
     await search(`q=${encodeURIComponent(q)}`);
+    const phones = [
+      'nevera teléfono +57 310 555 1234',
+      'nevera 310.555.1234',
+      'nevera 310-555-1234',
+      'nevera (601) 555-1234',
+    ];
+    for (const phone of phones) await search(`q=${encodeURIComponent(phone)}`);
     // Filtros con texto libre: solo se guardan las marcas y tiendas que existen.
     const { res } = await search(
       `q=tv&brands=${encodeURIComponent('ana.gomez@correo.example')},Kalora` +
@@ -359,6 +366,9 @@ describe.skipIf(!DATABASE_URL)('búsqueda y /go (H2)', () => {
     const rows = await client.db.select().from(searchQueries);
     const stored = rows.map((r) => r.qNormalized);
     expect(stored).toContain('nevera para [email] [numero]');
+    expect(stored).toContain('nevera telefono [numero]');
+    expect(stored.filter((x) => x === 'nevera [numero]')).toHaveLength(3);
+    for (const x of stored) expect(x).not.toMatch(/555/);
     expect(rows.map((r) => r.filters)).toContainEqual(
       expect.objectContaining({ brands: ['kalora'], merchants: ['tienda-aurora'] }),
     );

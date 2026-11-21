@@ -7,7 +7,6 @@ export { ACCESSORY_TERMS, parseQuery, type ParsedQuery } from './query';
 export { scrubQuery } from './query-log';
 export {
   AVAILABILITY_BONUS,
-  MAX_RESULTS,
   MIN_SCORE,
   discountPct,
   groupOffers,

@@ -1,4 +1,4 @@
-import type { SearchSort } from '@encuanto/contracts';
+import { FRESHNESS_HIDDEN_HOURS, type SearchSort } from '@encuanto/contracts';
 
 /**
  * Ranking, filtros y facetas de un listado (§8.3), como funciones puras sobre lo que devuelve
@@ -10,8 +10,6 @@ import type { SearchSort } from '@encuanto/contracts';
 export const AVAILABILITY_BONUS = 0.1;
 /** Umbral mínimo de puntuación (§8.3): por debajo, el producto no es un resultado. */
 export const MIN_SCORE = 0.05;
-/** Tamaño máximo del conjunto ordenado que se cachea (§8.6). */
-export const MAX_RESULTS = 1000;
 
 export interface Candidate {
   productId: string;
@@ -53,6 +51,11 @@ export interface MerchantGroup {
   maxAll: number;
   offerCount: number;
   inStock: boolean;
+  /**
+   * Segundos hasta que la oferta más antigua del grupo deje de estar vigente (§8.5), medidos
+   * por la BD. Acota cuánto puede durar en caché un conjunto calculado con ella.
+   */
+  validForSeconds: number;
 }
 
 export interface ListingFilters {
@@ -121,8 +124,13 @@ function better(a: GroupBest, b: GroupBest): boolean {
  * Agrupa ofertas por (producto, tienda) igual que la consulta SQL. Es la referencia de esa
  * agregación y la usan los tests.
  */
-export function groupOffers(offers: readonly LiveOffer[]): MerchantGroup[] {
+export function groupOffers(
+  offers: readonly LiveOffer[],
+  nowMs: number = Date.now(),
+): MerchantGroup[] {
   const groups = new Map<string, MerchantGroup>();
+  const validFor = (o: LiveOffer) =>
+    (o.lastSeenAt.getTime() + FRESHNESS_HIDDEN_HOURS * 3_600_000 - nowMs) / 1000;
   for (const o of offers) {
     const best: GroupBest = {
       offerId: o.offerId,
@@ -143,6 +151,7 @@ export function groupOffers(offers: readonly LiveOffer[]): MerchantGroup[] {
         maxAll: o.price,
         offerCount: 1,
         inStock: o.availability === 'in_stock',
+        validForSeconds: validFor(o),
       });
       continue;
     }
@@ -151,6 +160,7 @@ export function groupOffers(offers: readonly LiveOffer[]): MerchantGroup[] {
     g.maxAll = Math.max(g.maxAll, o.price);
     g.offerCount++;
     g.inStock ||= o.availability === 'in_stock';
+    g.validForSeconds = Math.min(g.validForSeconds, validFor(o));
   }
   return [...groups.values()];
 }
@@ -273,7 +283,7 @@ export function rankListing(
     b.count - a.count || a.name.localeCompare(b.name, 'es');
 
   return {
-    items: items.slice(0, MAX_RESULTS).map(({ discount: _discount, ...item }) => item),
+    items: items.map(({ discount: _discount, ...item }) => item),
     facets: {
       merchants: [...merchantFacet]
         .map(([slug, v]) => ({ slug, name: v.name, count: v.count }))

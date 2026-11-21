@@ -3,21 +3,33 @@ import type { Log } from '../../shared/log';
 import { normalizeText } from '../normalization/index';
 
 const EMAIL = /[^\s@]+@[^\s@]+/g;
-/** 7 o más dígitos seguidos (teléfonos, cédulas): no son búsquedas de producto útiles. */
-const LONG_NUMBER = /\d{7,}/g;
+/**
+ * Secuencia de dígitos con prefijo y separadores de contacto (`+`, espacios, puntos, guiones,
+ * paréntesis, barras): "+57 300 123 4567", "(601) 555-1234", "300.123.4567".
+ */
+const NUMBER_RUN = /\+?[(\d][\d\s().\-/]*\d/g;
+/** Con 7 o más dígitos es un teléfono o un documento, no una búsqueda de producto útil. */
+const MIN_IDENTIFYING_DIGITS = 7;
+
+function redactNumbers(text: string): string {
+  return text.replace(NUMBER_RUN, (run) =>
+    (run.match(/\d/g)?.length ?? 0) >= MIN_IDENTIFYING_DIGITS ? ' [numero] ' : run,
+  );
+}
 
 /**
- * Consulta apta para `search_queries` (§4.3, §6): normalizada y sin correos ni números largos
- * que puedan identificar a alguien. Se limpia la consulta original, antes de normalizar, porque
- * la normalización quitaría la "@" y el correo ya no se reconocería.
+ * Consulta apta para `search_queries` (§4.3, §6): normalizada y sin correos ni números que
+ * puedan identificar a alguien (teléfonos y documentos, también con prefijo y separadores).
+ * Se limpia la consulta original, antes de normalizar, porque la normalización quitaría la "@"
+ * y los separadores; después se repasa el resultado normalizado por si quedó algún número
+ * reconstruible (por ejemplo con separadores Unicode que la normalización convierte en espacio).
  */
 export function scrubQuery(raw: string): string {
-  const cleaned = raw.replace(EMAIL, ' [email] ').replace(LONG_NUMBER, ' [numero] ');
-  return normalizeText(cleaned)
+  const cleaned = redactNumbers(raw.replace(EMAIL, ' [email] '));
+  const normalized = normalizeText(cleaned)
     .replace(/[^a-z0-9[\] ]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 100);
+    .replace(/\s+/g, ' ');
+  return redactNumbers(normalized).replace(/\s+/g, ' ').trim().slice(0, 100);
 }
 
 export interface QueryLogEntry {
