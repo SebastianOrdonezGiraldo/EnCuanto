@@ -5,8 +5,6 @@ import { merchantSlugSchema } from './admin';
 export const MAX_FILTER_PRICE = 1_000_000_000_000;
 export const MAX_PAGE_SIZE = 48;
 export const DEFAULT_PAGE_SIZE = 24;
-/** Páginas navegables: el conjunto cacheado tiene como mucho 1.000 productos (§8.6). */
-export const MAX_PAGE = 100;
 /** Máximo de valores en un filtro CSV (`merchants`, `brands`). */
 export const MAX_FILTER_VALUES = 20;
 
@@ -40,7 +38,9 @@ const listingFieldsSchema = z.object({
   max_price: price.optional(),
   discount_only: bool.default(false),
   sort: z.enum(SEARCH_SORTS).default('relevance'),
-  page: z.coerce.number().int().min(1).max(MAX_PAGE).default(1),
+  // Sin tope de página: el conjunto no se recorta, así que toda página derivada del total es
+  // navegable. Una página más allá del final devuelve `results` vacío con el total real.
+  page: z.coerce.number().int().min(1).max(Number.MAX_SAFE_INTEGER).default(1),
   page_size: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
 });
 

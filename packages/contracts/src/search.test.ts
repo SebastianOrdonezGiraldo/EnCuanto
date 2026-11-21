@@ -19,6 +19,8 @@ describe('searchQuerySchema (§7)', () => {
     [{ q: 'x'.repeat(101) }],
     [{ q: 'tv', page_size: '49' }],
     [{ q: 'tv', page: '0' }],
+    [{ q: 'tv', page: '1.5' }],
+    [{ q: 'tv', page: '9007199254740992' }],
     [{ q: 'tv', sort: 'popular' }],
     [{ q: 'tv', min_price: '-1' }],
     [{ q: 'tv', min_price: '10', max_price: '5' }],
@@ -27,6 +29,11 @@ describe('searchQuerySchema (§7)', () => {
     [{ q: ['tv', 'nevera'] }],
   ])('rechaza %j', (input) => {
     expect(searchQuerySchema.safeParse(input).success).toBe(false);
+  });
+
+  it('no limita el número de página (el conjunto no se recorta)', () => {
+    expect(searchQuerySchema.parse({ q: 'tv', page: '101' }).page).toBe(101);
+    expect(searchQuerySchema.parse({ q: 'tv', page: '5000' }).page).toBe(5000);
   });
 
   it('el listado no exige q', () => {

@@ -195,17 +195,21 @@ export class SearchService {
     filters: ListingFilters,
     options: RankOptions,
   ): Promise<CachedListing> {
+    // Instante de la API anterior a la consulta: la BD mide la validez desde su now(), que es
+    // posterior, así que anclarla aquí es conservador. Anclarla al final sumaría el tiempo de
+    // consulta y de ranking a la vida de las ofertas.
+    const queriedAt = this.now();
     const { candidates, groups } = await findListing(this.deps.client.sql, source, {
       discountOnly: filters.discountOnly,
     });
     const { items, facets } = rankListing(candidates, groups, filters, options);
-    const now = this.now();
-    // Validez medida por la BD (la misma que decide qué es vigente), anclada al reloj de la API.
     const validFor = groups.reduce((min, g) => Math.min(min, g.validForSeconds), Infinity);
     return {
-      generatedAt: now.toISOString(),
+      generatedAt: this.now().toISOString(),
       validUntil:
-        validFor === Infinity ? null : new Date(now.getTime() + validFor * 1000).toISOString(),
+        validFor === Infinity
+          ? null
+          : new Date(queriedAt.getTime() + validFor * 1000).toISOString(),
       items,
       facets,
     };

@@ -7,10 +7,44 @@ import { ListingCache, SearchService, type CacheStore } from '../../src/modules/
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
-/** Más coincidencias que el antiguo recorte de 1.500 candidatos. */
-const MANY = 1600;
+/**
+ * Más coincidencias que el antiguo recorte de 1.500 candidatos y más de 100 páginas de 24 (el
+ * antiguo tope de página).
+ */
+const MANY = 2500;
 
 const log = { info() {}, warn() {}, error() {} };
+
+type Sql = DbClient['sql'];
+
+/**
+ * `sql` que retrasa `ms` la entrega del resultado de la consulta de listados (la que calcula
+ * `valid_for_s`): la BD ya midió la validez y la API la recibe más tarde.
+ */
+function delayListingQuery(sql: Sql, ms: number): Sql {
+  return new Proxy(sql, {
+    apply(target, thisArg, args: unknown[]) {
+      const query = Reflect.apply(target, thisArg, args) as PromiseLike<unknown> & object;
+      const strings = args[0];
+      if (!Array.isArray(strings) || !strings.join('').includes('valid_for_s')) return query;
+      return new Proxy(query, {
+        get(t, prop) {
+          if (prop === 'then') {
+            return (ok: (v: unknown) => unknown, fail: (e: unknown) => unknown) =>
+              t
+                .then(async (rows) => {
+                  await new Promise((r) => setTimeout(r, ms));
+                  return rows;
+                })
+                .then(ok, fail);
+          }
+          const v = Reflect.get(t, prop, t) as unknown;
+          return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+        },
+      });
+    },
+  });
+}
 
 /**
  * Casos de la revisión de H2: el universo de resultados no se recorta antes de filtrar y
@@ -122,10 +156,79 @@ describe.skipIf(!DATABASE_URL)('listados: universo completo y caché con frescur
       count: 1,
     });
 
-    // La última página es navegable: el total no promete resultados que no existen.
-    const last = Math.ceil(all.total / 48);
-    const lastPage = await get(`/api/search?q=zorblax&page_size=48&page=${last}`);
-    expect(lastPage.results).toHaveLength(all.total - (last - 1) * 48);
+    // Todas las páginas que se derivan del total son navegables, también pasada la 100.
+    const last = Math.ceil(all.total / 24);
+    expect(last).toBe(105);
+    const page101 = await get('/api/search?q=zorblax&page_size=24&page=101');
+    expect(page101.page).toBe(101);
+    expect(page101.results).toHaveLength(24);
+    const lastPage = await get(`/api/search?q=zorblax&page_size=24&page=${last}`);
+    expect(lastPage.results).toHaveLength(all.total - (last - 1) * 24);
+    // Las páginas no se solapan: el conjunto ordenado es estable.
+    const ids = new Set<string>();
+    for (const page of [100, 101, 102]) {
+      const p = await get(`/api/search?q=zorblax&page_size=24&page=${page}`);
+      for (const r of p.results) ids.add(r.product_id);
+    }
+    expect(ids.size).toBe(72);
+    // Más allá del final: vacío, con el total real.
+    const beyond = await get(`/api/search?q=zorblax&page_size=24&page=${last + 1}`);
+    expect(beyond.results).toEqual([]);
+    expect(beyond.total).toBe(all.total);
+  });
+
+  it('la demora entre la BD y la API no alarga la validez de la caché', async () => {
+    await upsertCatalog(client.db, [
+      {
+        category: { name: 'Gadgets' },
+        brand: 'Comun',
+        canonicalName: 'Vexoran Dos',
+        modelNumber: 'VX-2',
+        variants: [{ key: 'vx', gtin: null, attributes: {} }],
+      },
+    ]);
+    // La más barata caduca a los 1,5 s; la consulta tarda 3 s más en llegar a la API.
+    await client.sql`
+      insert into offers (merchant_id, external_id, title_raw, url, price, availability, variant_id, match_status, last_seen_at)
+      select m.id, x.ext, 'Vexoran Dos', 'https://t.example/p/' || x.ext, x.price, 'in_stock', v.id, 'manual', x.seen
+        from (values ('tienda-grande', 'VX-A', 100, now() - interval '72 hours' + interval '1.5 seconds'),
+                     ('tienda-unica',  'VX-B', 200, now())) as x(merchant, ext, price, seen)
+        join merchants m on m.slug = x.merchant
+        cross join (select pv.id from product_variants pv join products p on p.id = pv.product_id
+                     where p.model_number = 'VX-2') v`;
+
+    const shared = new Map<string, string>();
+    const sharedStore: CacheStore = {
+      get: async (k) => shared.get(k) ?? null,
+      set: async (k, v) => void shared.set(k, v),
+    };
+    const service = (sql: Sql) =>
+      new SearchService({
+        client: { ...client, sql },
+        cache: new ListingCache(sharedStore, 600, log),
+        log,
+        weights: { text: 1, trgm: 0.5 },
+        logQueries: false,
+      });
+    const query = {
+      q: 'vexoran',
+      sort: 'relevance',
+      page: 1,
+      page_size: 24,
+      discount_only: false,
+    } as const;
+
+    // Calculado con la oferta de 100 todavía vigente, recibido 3 s después (ya caducada).
+    const slow = await service(delayListingQuery(client.sql, 3000)).search(query);
+    expect(slow.cache.hit).toBe(false);
+
+    // Misma versión y mismo store: el conjunto no debe servirse, porque su validez se mide desde
+    // antes de la consulta, no desde que llegó la respuesta.
+    const after = await service(client.sql).search(query);
+    expect(after.cache.hit).toBe(false);
+    expect(after.total).toBe(1);
+    expect(after.results).toHaveLength(1);
+    expect(after.results[0]!.best_offer.price).toBe(200);
   });
 
   it('con la caché caliente, al caducar la mejor oferta el producto sigue con la otra', async () => {

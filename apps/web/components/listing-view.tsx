@@ -1,6 +1,6 @@
 import { SEARCH_SORTS, type Facets, type SearchResult, type SearchSort } from '@encuanto/contracts';
 import type { ReactNode } from 'react';
-import { hrefFor, type ListingState } from '@/lib/listing-params';
+import { hrefFor, paginate, type ListingState } from '@/lib/listing-params';
 import { ListingFilters } from './listing-filters';
 import { ResultCard } from './result-card';
 
@@ -34,7 +34,7 @@ export function ListingView({
   showMerchantFacet = true,
   empty,
 }: Props) {
-  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const { pages, prev, next } = paginate(path, state, total, PAGE_SIZE);
   const now = new Date();
   return (
     <div className="grid gap-8 md:grid-cols-[16rem_1fr]">
@@ -99,24 +99,16 @@ export function ListingView({
 
         {pages > 1 ? (
           <nav aria-label="Páginas" className="flex items-center justify-center gap-4">
-            {state.page > 1 ? (
-              <a
-                href={hrefFor(path, state, { page: state.page - 1 })}
-                rel="prev"
-                className="font-semibold underline"
-              >
+            {prev ? (
+              <a href={prev} rel="prev" className="font-semibold underline">
                 Anterior
               </a>
             ) : null}
             <span className="text-sm">
               Página {state.page} de {pages}
             </span>
-            {state.page < pages ? (
-              <a
-                href={hrefFor(path, state, { page: state.page + 1 })}
-                rel="next"
-                className="font-semibold underline"
-              >
+            {next ? (
+              <a href={next} rel="next" className="font-semibold underline">
                 Siguiente
               </a>
             ) : null}

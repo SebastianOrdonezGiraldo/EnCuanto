@@ -1,4 +1,4 @@
-import { MAX_FILTER_VALUES, MAX_PAGE, SEARCH_SORTS, type SearchSort } from '@encuanto/contracts';
+import { MAX_FILTER_VALUES, SEARCH_SORTS, type SearchSort } from '@encuanto/contracts';
 
 /** searchParams tal como los entrega Next (un valor, varios o ninguno). */
 export type RawParams = Record<string, string | string[] | undefined>;
@@ -40,7 +40,8 @@ function price(v: string | string[] | undefined): number | undefined {
  */
 export function parseListingParams(params: RawParams): ListingState {
   const sort = first(params.sort);
-  const page = Number(first(params.page));
+  const rawPage = first(params.page);
+  const page = rawPage && /^\d{1,15}$/.test(rawPage) ? Number(rawPage) : NaN;
   let minPrice = price(params.min_price);
   let maxPrice = price(params.max_price);
   if (minPrice !== undefined && maxPrice !== undefined && minPrice > maxPrice) {
@@ -55,7 +56,7 @@ export function parseListingParams(params: RawParams): ListingState {
     sort: (SEARCH_SORTS as readonly string[]).includes(sort ?? '')
       ? (sort as SearchSort)
       : 'relevance',
-    page: Number.isInteger(page) && page >= 1 && page <= MAX_PAGE ? page : 1,
+    page: Number.isSafeInteger(page) && page >= 1 ? page : 1,
   };
 }
 
@@ -94,3 +95,21 @@ export const hasFilters = (s: ListingState) =>
   s.brands.length > 0 ||
   s.minPrice !== undefined ||
   s.maxPrice !== undefined;
+
+/**
+ * Paginación de un listado: todas las páginas que se derivan del total, sin tope (el conjunto
+ * no se recorta). `prev`/`next` son los enlaces a las páginas vecinas, o null.
+ */
+export function paginate(
+  path: string,
+  state: ListingState,
+  total: number,
+  pageSize: number,
+): { pages: number; prev: string | null; next: string | null } {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  return {
+    pages,
+    prev: state.page > 1 ? hrefFor(path, state, { page: state.page - 1 }) : null,
+    next: state.page < pages ? hrefFor(path, state, { page: state.page + 1 }) : null,
+  };
+}
