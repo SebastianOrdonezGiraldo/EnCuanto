@@ -3,11 +3,13 @@ import {
   categoryListingResponseSchema,
   merchantListingResponseSchema,
   merchantsResponseSchema,
+  productResponseSchema,
   searchResponseSchema,
   type CategoriesResponse,
   type CategoryListingResponse,
   type MerchantListingResponse,
   type MerchantsResponse,
+  type ProductResponse,
   type SearchResponse,
 } from '@encuanto/contracts';
 import { apiBaseUrl } from './config';
@@ -82,4 +84,8 @@ export function listCategories(): Promise<CategoriesResponse> {
 
 export function listMerchants(): Promise<MerchantsResponse> {
   return getJson('/api/merchants', merchantsResponseSchema, 300);
+}
+
+export function getProduct(id: string): Promise<ProductResponse> {
+  return getJson(`/api/products/${encodeURIComponent(id)}`, productResponseSchema);
 }

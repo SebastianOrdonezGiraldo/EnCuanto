@@ -39,7 +39,7 @@ describe.skipIf(!DATABASE_URL)('admin mínimo de sync runs', () => {
         version: 't',
         startedAt: Date.now(),
       },
-      admin: { db: ctx.client.db, token: TOKEN, enqueueSync },
+      admin: { client: ctx.client, token: TOKEN, enqueueSync },
     });
   });
 

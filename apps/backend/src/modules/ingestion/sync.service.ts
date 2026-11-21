@@ -439,6 +439,7 @@ export function toOfferOrQuarantine(
     brand: n.brand,
     modelNumber: n.modelNumber,
     attributes: n.attributes,
+    category: raw.category ?? null,
   };
 }
 
@@ -490,6 +491,8 @@ async function writeOffers(client: DbClient, merchantId: string, rows: NewOffer[
           brand: sql`excluded.brand`,
           modelNumber: sql`excluded.model_number`,
           attributes: sql`excluded.attributes`,
+          // No está en CONTENT_FIELDS: el usuario no la ve; solo la usa el matching al crear fichas.
+          category: sql`excluded.category`,
           lastSeenAt: sql`now()`,
           lastChangedAt: sql`case when ${offers.price} is distinct from excluded.price
             or ${offers.listPrice} is distinct from excluded.list_price

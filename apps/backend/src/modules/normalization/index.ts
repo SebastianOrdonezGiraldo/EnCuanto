@@ -1,5 +1,6 @@
 /** Módulo `normalization` (§8.1): funciones puras, sin BD ni red. */
-export { extractAttributes, type ExtractedAttributes } from './attributes';
+export { ACCESSORY_TERMS } from './accessory';
+export { extractAttributes, removeFragments, type ExtractedAttributes } from './attributes';
 export {
   BRAND_ALIASES,
   brandKey,
@@ -8,7 +9,7 @@ export {
   type BrandDictionary,
 } from './brand';
 export { checkDigit, normalizeGtin } from './gtin';
-export { extractModelNumber } from './model';
+export { extractModelNumber, isSpecToken } from './model';
 export {
   normalizeOffer,
   type NormalizeResult,

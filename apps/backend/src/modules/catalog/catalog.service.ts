@@ -8,7 +8,7 @@ import {
   type VariantAttributes,
 } from '@encuanto/db';
 import { and, inArray, isNull, sql } from 'drizzle-orm';
-import { brandKey } from '../normalization/index';
+import { brandKey, normalizeGtin } from '../normalization/index';
 
 /** Variante de una ficha que se quiere registrar. `key` la identifica en el resultado. */
 export interface CatalogVariantInput {
@@ -60,8 +60,8 @@ const productKey = (
  * Identidad: la categoría por slug; el producto por (marca, categoría, modelo) o, sin modelo,
  * por (marca, categoría, nombre); la variante por GTIN o, sin GTIN, por (producto, atributos).
  *
- * En H2 solo lo usa el seed sintético, que conoce la ficha de cada oferta. En H3 lo alimentará
- * el matching (§8.2) cuando cree productos nuevos (nivel 5).
+ * Lo usa el seed sintético, que conoce la ficha de cada oferta. El matching (H3) crea las fichas
+ * una a una con `createProduct` y `createVariant`.
  */
 export async function upsertCatalog(
   db: Database,
@@ -175,7 +175,13 @@ export async function upsertCatalog(
 
   // 4. Variantes: por GTIN (único) o por (producto, atributos).
   const wanted = resolved.flatMap((r) =>
-    r.entry.variants.map((v) => ({ ...v, productId: productId.get(r.key)! })),
+    // GTIN en 14 dígitos, como lo guarda la ingesta (normalizeGtin): así el matching de nivel 1
+    // encuentra la variante. Uno inválido se descarta.
+    r.entry.variants.map((v) => ({
+      ...v,
+      gtin: normalizeGtin(v.gtin),
+      productId: productId.get(r.key)!,
+    })),
   );
   const byGtin = new Map<string, string>();
   const byAttrs = new Map<string, string>();

@@ -29,7 +29,8 @@ describe('extractAttributes (§8.1.3)', () => {
     ['Memoria microSD 128GB', { storage_gb: 128 }],
     ['Nevera No Frost 300 Litros Gris', { capacity_l: 300, color: 'gris' }],
     ['Nevecón 520 L Plata', { capacity_l: 520, color: 'plata' }],
-    ['Lavadora Carga Superior 19 Kg 45 Lts', { capacity_l: 45 }],
+    // H3: los kilos también se extraen (weight_kg).
+    ['Lavadora Carga Superior 19 Kg 45 Lts', { capacity_l: 45, weight_kg: 19 }],
     ['Licuadora 1,5 L Roja', { capacity_l: 1.5, color: 'rojo' }],
     ['Olla arrocera 1.8lt', { capacity_l: 1.8 }],
     ['Televisor 55" 4K UHD', { screen_in: 55 }],
@@ -139,5 +140,28 @@ describe('normalizeOffer', () => {
       ok: false,
       reason: 'empty_title',
     });
+  });
+});
+
+describe('ampliaciones de H3 (matching)', () => {
+  it.each([
+    ['Lavadora Carga Superior 17 Kg Gris', { weight_kg: 17, color: 'gris' }],
+    ['LAVADORA 19KG BLANCA', { weight_kg: 19, color: 'blanco' }],
+    ['Lavadora 22 kilos', { weight_kg: 22 }],
+    ['Secadora 10,5 kg', { weight_kg: 10.5 }],
+  ])('kilos: %j', (title, expected) => {
+    expect(extractAttributes(normalizeText(title)).attributes).toEqual(expected);
+  });
+
+  it('el color reconocido queda entre los fragmentos (el matching lo quita del título)', () => {
+    expect(extractAttributes(normalizeText('Celular X 128GB Negro')).matched).toContain('negro');
+  });
+
+  it.each([
+    ['Portátil Vireo Book 14 Core i5-1235U 8GB RAM VR-B14', 'VR-B14'],
+    ['Portátil Gamer Vireo RTX4060 VR-G15', 'VR-G15'],
+  ])('el procesador o la tarjeta gráfica no son el modelo: %j', (title, expected) => {
+    const text = normalizeText(title);
+    expect(extractModelNumber(text, extractAttributes(text).matched)).toBe(expected);
   });
 });

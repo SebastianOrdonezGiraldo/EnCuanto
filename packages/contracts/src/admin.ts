@@ -62,3 +62,55 @@ export type AdminListQuery = z.infer<typeof adminListQuerySchema>;
 export type SyncRunDto = z.infer<typeof syncRunSchema>;
 export type MerchantStatusDto = z.infer<typeof merchantStatusSchema>;
 export type QuarantinedRecordDto = z.infer<typeof quarantinedRecordSchema>;
+
+/** GET /api/admin/match-reviews (H3, CU‑9): cola de matching dudoso. */
+export const matchReviewsQuerySchema = z.object({
+  status: z.enum(['pending', 'accepted', 'rejected']).default('pending'),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
+export const matchReviewSchema = z.object({
+  id: z.uuid(),
+  status: z.enum(['pending', 'accepted', 'rejected']),
+  reason: z.string(),
+  score: z.number(),
+  created_at: z.iso.datetime({ offset: true }),
+  reviewed_at: z.iso.datetime({ offset: true }).nullable(),
+  offer: z.object({
+    id: z.uuid(),
+    merchant: z.string(),
+    title: z.string(),
+    price: z.number().int(),
+    gtin: z.string().nullable(),
+    brand: z.string().nullable(),
+    url: z.string(),
+  }),
+  candidate: z.object({
+    variant_id: z.uuid(),
+    product_id: z.uuid(),
+    product_name: z.string(),
+    brand: z.string().nullable(),
+    model_number: z.string().nullable(),
+    gtin: z.string().nullable(),
+    attributes: z.record(z.string(), z.unknown()),
+  }),
+});
+export const matchReviewsResponseSchema = z.object({ reviews: z.array(matchReviewSchema) });
+
+/**
+ * POST /api/admin/match-reviews/:id: `accept` (es la variante candidata), `new_variant` (misma
+ * ficha, variante nueva), `new_product` (ficha nueva) o `discard` (no se muestra).
+ */
+export const resolveMatchReviewSchema = z.object({
+  decision: z.enum(['accept', 'new_variant', 'new_product', 'discard']),
+});
+export const resolveMatchReviewResponseSchema = z.object({
+  id: z.uuid(),
+  decision: resolveMatchReviewSchema.shape.decision,
+  variant_id: z.uuid().nullable(),
+});
+
+/** POST /api/admin/matching → 202: encola un matching de las ofertas pendientes. */
+export const enqueueMatchingResponseSchema = z.object({ job_id: z.string().nullable() });
+
+export type MatchReviewDto = z.infer<typeof matchReviewSchema>;

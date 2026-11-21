@@ -30,3 +30,8 @@ export class UnauthorizedError extends DomainError {
   readonly statusCode = 401;
   readonly code = 'unauthorized';
 }
+
+export class ConflictError extends DomainError {
+  readonly statusCode = 409;
+  readonly code = 'conflict';
+}

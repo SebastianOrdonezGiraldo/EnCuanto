@@ -40,3 +40,8 @@ export function createDb(url: string, options: DbOptions = {}) {
 
 export type DbClient = ReturnType<typeof createDb>;
 export type Database = DbClient['db'];
+
+/** Transacción de Drizzle (`db.transaction(async (tx) => …)`). */
+export type DbTransaction = Parameters<Parameters<Database['transaction']>[0]>[0];
+/** Algo sobre lo que ejecutar consultas: la BD o una transacción abierta. */
+export type DbExecutor = Database | DbTransaction;

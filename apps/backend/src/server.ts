@@ -1,9 +1,11 @@
 import { createDb } from '@encuanto/db';
 import { buildApp } from './app';
 import { bullConnection, createSyncQueue, enqueueSync } from './modules/ingestion/index';
+import { createMatchingQueue, enqueueMatching } from './modules/matching/index';
 import { ListingCache, SearchService } from './modules/search/index';
 import { loadConfig } from './shared/config';
 import { loggerOptions } from './shared/logger';
+import { CATALOG_VERSION_KEY } from './shared/catalog-version';
 import { createRedis } from './shared/redis';
 
 const VERSION = process.env.npm_package_version ?? '0.0.0';
@@ -13,6 +15,9 @@ const db = createDb(config.DATABASE_URL);
 const redis = createRedis(config.REDIS_URL);
 // La cola solo hace falta para el sync manual del admin.
 const syncQueue = config.ADMIN_TOKEN ? createSyncQueue(bullConnection(config.REDIS_URL)) : null;
+const matchingQueue = config.ADMIN_TOKEN
+  ? createMatchingQueue(bullConnection(config.REDIS_URL))
+  : null;
 
 // La caché es opcional: si Redis cae, la búsqueda sigue funcionando sin caché.
 const searchLog = {
@@ -45,9 +50,13 @@ const app = buildApp(
     admin:
       config.ADMIN_TOKEN && syncQueue
         ? {
-            db: db.db,
+            client: db,
             token: config.ADMIN_TOKEN,
             enqueueSync: (slug) => enqueueSync(syncQueue, slug, 'admin'),
+            enqueueMatching: matchingQueue
+              ? () => enqueueMatching(matchingQueue, { trigger: 'admin' })
+              : undefined,
+            onCatalogChanged: async () => void (await redis.incr(CATALOG_VERSION_KEY)),
           }
         : undefined,
     search,
@@ -61,7 +70,7 @@ redis.on('error', (err) => app.log.warn({ err: err.message }, 'redis: error de c
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, 'cerrando');
   await app.close();
-  await Promise.allSettled([db.close(), redis.quit(), syncQueue?.close()]);
+  await Promise.allSettled([db.close(), redis.quit(), syncQueue?.close(), matchingQueue?.close()]);
   process.exit(0);
 };
 process.once('SIGINT', () => void shutdown('SIGINT'));

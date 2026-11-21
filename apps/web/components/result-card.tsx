@@ -3,8 +3,9 @@ import { verifiedAgo } from '@/lib/freshness';
 import { formatCOP } from '@/lib/format';
 
 /**
- * Ficha de un resultado: "desde $X en N tiendas", mejor oferta con su frescura (§4.6, §8.5) y
- * salida a la tienda por /go (CU‑4). Todo el texto llega escapado por React.
+ * Ficha de un resultado: "desde $X en N tiendas", mejor oferta con su frescura (§4.6, §8.5),
+ * enlace a la ficha de producto (H3) y salida a la tienda por /go (CU‑4). Todo el texto llega
+ * escapado por React.
  */
 export function ResultCard({ result, now }: { result: SearchResult; now: Date }) {
   const offer = result.best_offer;
@@ -24,7 +25,13 @@ export function ResultCard({ result, now }: { result: SearchResult; now: Date })
         </div>
         <div className="min-w-0">
           <h3 className="font-sans text-base leading-snug font-semibold" data-testid="result-name">
-            {result.name}
+            <a
+              href={`/producto/${result.product_id}`}
+              className="hover:text-brand-600 hover:underline"
+              data-testid="result-link"
+            >
+              {result.name}
+            </a>
           </h3>
           <p className="text-sm text-ink-500">
             {[result.brand, result.category?.name].filter(Boolean).join(' · ')}
