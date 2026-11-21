@@ -2,7 +2,12 @@ import { matchReviews, offers, type DbClient, type Database } from '@encuanto/db
 import { and, eq, sql } from 'drizzle-orm';
 import { ConflictError, NotFoundError } from '../../shared/errors';
 import { createVariant, gtinInUse } from '../catalog/index';
-import { createProductFromOffer, lockCatalogForMatching } from './match.service';
+import {
+  createProductFromOffer,
+  flushCatalogInvalidation,
+  lockCatalogForMatching,
+  requestCatalogInvalidation,
+} from './match.service';
 import { prepareTitle } from './title';
 
 /** Decisión de una persona sobre una revisión (CU‑9). */
@@ -120,7 +125,8 @@ export async function listReviews(
  * `rejected` si se descarta) y el matching automático ya no la toca, salvo que la fuente cambie su
  * título, GTIN o marca (entonces vuelve a `pending`). Devuelve la variante asignada o null.
  *
- * `onCatalogChanged` sube la versión de catálogo cuando la oferta pasa a verse en una ficha.
+ * `onCatalogChanged` sube la versión de catálogo cuando la oferta pasa a verse en una ficha. Si
+ * falla, la invalidación queda pendiente en `catalog_invalidations` y la reintenta el matching.
  */
 export async function resolveReview(
   client: DbClient,
@@ -194,8 +200,11 @@ export async function resolveReview(
         reviewedAt: sql`now()`,
       })
       .where(and(eq(matchReviews.id, review.id), eq(matchReviews.status, 'pending')));
+    // La oferta pasa a verse en una ficha: invalidación pendiente, confirmada con la decisión.
+    if (assigned) await requestCatalogInvalidation(tx);
     return assigned;
   });
-  if (variantId && onCatalogChanged) await onCatalogChanged().catch(() => undefined);
+  // Si falla, la marca sigue y la recupera la siguiente ejecución del matching.
+  await flushCatalogInvalidation({ db: client, onCatalogChanged });
   return { variantId };
 }

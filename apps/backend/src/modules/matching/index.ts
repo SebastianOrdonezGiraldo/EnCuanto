@@ -7,6 +7,7 @@ export { assignVariants, type VariantAssignment } from './assign.service';
 export { candidatesInMemory, MAX_SIMILAR_PRODUCTS, RECALL_SIMILARITY } from './candidates';
 export { findCandidates } from './candidates.repository';
 export {
+  flushCatalogInvalidation,
   MATCHING_LOCK,
   runMatching,
   type MatchingDeps,
@@ -17,6 +18,8 @@ export {
   createMatchingWorker,
   enqueueMatching,
   logMatchingWorkerEvents,
+  MatchingJobError,
+  sanitizedProcessor,
   MATCHING_QUEUE,
   type MatchingJobData,
 } from './queue';

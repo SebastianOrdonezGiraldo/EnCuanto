@@ -1,6 +1,13 @@
-import { matchReviews, offers, type DbClient, type DbExecutor } from '@encuanto/db';
+import {
+  catalogInvalidations,
+  matchReviews,
+  offers,
+  type DbClient,
+  type DbExecutor,
+} from '@encuanto/db';
 import { and, eq, sql } from 'drizzle-orm';
 import type { Log } from '../../shared/log';
+import { safeErrorInfo } from '../../shared/safe-error';
 import {
   createProduct,
   createVariant,
@@ -89,7 +96,8 @@ export async function runMatching(
 ): Promise<MatchingResult> {
   const result = emptyResult();
   const attempted = new Set<string>();
-  let catalogChanged = false;
+  // Una invalidación que falló en una ejecución anterior se reintenta aunque no haya pendientes.
+  await flushCatalogInvalidation(deps);
   let found = true;
   while (found) {
     found = false;
@@ -121,11 +129,11 @@ export async function runMatching(
             continue;
           }
           count(result, outcome);
-          if (outcome.changed) catalogChanged = true;
         } catch (error) {
           result.failed++;
           deps.log.error(
-            { offer_id: id, err: error instanceof Error ? error.message : 'error desconocido' },
+            // Nunca el mensaje: el de Drizzle lleva la consulta y los datos de la oferta (§4).
+            { offer_id: id, ...safeErrorInfo(error) },
             'matching: falló una oferta',
           );
         }
@@ -139,17 +147,7 @@ export async function runMatching(
     );
   }
   deps.log.info({ ...result }, 'matching: fin');
-  if (catalogChanged && deps.onCatalogChanged) {
-    try {
-      await deps.onCatalogChanged();
-    } catch (error) {
-      // La caché de búsqueda caduca sola (TTL, §8.6); no se pierde el trabajo hecho.
-      deps.log.warn(
-        { err: error instanceof Error ? error.message : 'error desconocido' },
-        'matching: no se pudo invalidar la caché del catálogo',
-      );
-    }
-  }
+  await flushCatalogInvalidation(deps);
   return result;
 }
 
@@ -169,6 +167,53 @@ function count(result: MatchingResult, o: Outcome): void {
   else if (d.kind === 'new_variant') result.newVariants++;
   else if (d.kind === 'new_product') result.newProducts++;
   else result.reviews++;
+}
+
+/**
+ * Marca la caché del catálogo como pendiente de invalidar (§8.6). Se llama dentro de la
+ * transacción que cambia lo que ve la búsqueda: la marca se confirma con el cambio o no existe.
+ */
+export async function requestCatalogInvalidation(tx: DbExecutor): Promise<void> {
+  await tx
+    .insert(catalogInvalidations)
+    .values({ id: 1 })
+    .onConflictDoUpdate({
+      target: catalogInvalidations.id,
+      set: { generation: sql`${catalogInvalidations.generation} + 1`, requestedAt: sql`now()` },
+    });
+}
+
+/**
+ * Invalida la caché si hay una marca pendiente y la borra solo si nadie la renovó mientras
+ * tanto. Si falla, la marca se queda y la siguiente ejecución lo reintenta. Devuelve si invalidó.
+ */
+export async function flushCatalogInvalidation(deps: {
+  db: DbClient;
+  log?: Log;
+  onCatalogChanged?: () => Promise<void>;
+}): Promise<boolean> {
+  if (!deps.onCatalogChanged) return false;
+  const [pending] = await deps.db.db
+    .select({ generation: catalogInvalidations.generation })
+    .from(catalogInvalidations)
+    .where(eq(catalogInvalidations.id, 1));
+  if (!pending) return false;
+  try {
+    await deps.onCatalogChanged();
+  } catch (error) {
+    // La caché caduca sola (TTL, §8.6), pero la marca sigue: se reintenta en la siguiente.
+    deps.log?.warn(
+      safeErrorInfo(error),
+      'matching: no se pudo invalidar la caché; queda pendiente',
+    );
+    return false;
+  }
+  await deps.db.db
+    .delete(catalogInvalidations)
+    .where(
+      and(eq(catalogInvalidations.id, 1), eq(catalogInvalidations.generation, pending.generation)),
+    );
+  return true;
 }
 
 /** Bloquea el catálogo para decisiones de matching hasta el final de la transacción. */
@@ -195,6 +240,8 @@ async function matchOne(client: DbClient, offerId: string): Promise<Outcome | nu
     const candidates = await findCandidates(tx, offer, title);
     const decision = decideMatch(offer, candidates);
     const { changed, gtinFilled } = await applyDecision(tx, row, title, decision);
+    // En la misma transacción: si se confirma la decisión, la invalidación queda pendiente.
+    if (changed) await requestCatalogInvalidation(tx);
     return { decision, changed, capped: candidates.capped, gtinFilled };
   });
 }

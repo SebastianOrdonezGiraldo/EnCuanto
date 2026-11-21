@@ -1,5 +1,6 @@
 import {
   brands,
+  catalogInvalidations,
   categories,
   createDb,
   matchReviews,
@@ -16,9 +17,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app';
 import { createIsolatedDatabase, type IsolatedDatabase } from '../../src/dev/isolated-db';
 import { runSync } from '../../src/modules/ingestion/index';
-import { listReviews, resolveReview, runMatching } from '../../src/modules/matching/index';
+import {
+  listReviews,
+  resolveReview,
+  runMatching,
+  sanitizedProcessor,
+} from '../../src/modules/matching/index';
 import { upsertMerchant } from '../../src/modules/merchants/index';
-import { ListingCache, SearchService } from '../../src/modules/search/index';
+import { ListingCache, SearchService, type CacheStore } from '../../src/modules/search/index';
+import { CATALOG_VERSION_KEY } from '../../src/shared/catalog-version';
 import { silentLog } from '../../src/shared/log';
 import { fakeAdapter } from '../ingestion/helpers';
 import { gtin } from './set-de-prueba';
@@ -248,14 +255,32 @@ describe.skipIf(!DATABASE_URL)('matching de extremo a extremo (H3)', () => {
     expect(c2).toMatchObject({ match_status: 'manual', variant_id: variantId });
     await expect(resolveReview(client, review!.id, 'discard')).rejects.toThrow(/ya está resuelta/);
 
-    // Un cambio de título no reabre una decisión de una persona.
+    // Volver a sincronizar los mismos datos no la toca.
+    await sync('tienda-c', feeds.get('tienda-c')!);
+    expect(await offerRow('tienda-c', 'C2')).toMatchObject({
+      match_status: 'manual',
+      variant_id: variantId,
+    });
+    // Un cambio de título sí: la persona decidió con otros datos. Se desenlaza y se vuelve a
+    // decidir.
     await sync(
       'tienda-c',
       feeds
         .get('tienda-c')!
         .map((o) => (o.externalId === 'C2' ? { ...o, title: 'Kalora Nova 12 128GB Negro' } : o)),
     );
-    expect(await offerRow('tienda-c', 'C2')).toMatchObject({ match_status: 'manual' });
+    expect(await offerRow('tienda-c', 'C2')).toMatchObject({
+      match_status: 'pending',
+      variant_id: null,
+    });
+    // El matching la vuelve a decidir: enlace automático o a la cola de revisión.
+    await match();
+    const c2again = await offerRow('tienda-c', 'C2');
+    const reopened = await client.db
+      .select()
+      .from(matchReviews)
+      .where(sql`${matchReviews.offerId} = ${c2again.id} and ${matchReviews.status} = 'pending'`);
+    expect(c2again.match_status === 'auto' || reopened.length === 1).toBe(true);
   });
 
   it('si la fuente cambia título, GTIN o marca de una oferta automática, se vuelve a decidir', async () => {
@@ -267,11 +292,14 @@ describe.skipIf(!DATABASE_URL)('matching de extremo a extremo (H3)', () => {
         gtin: gtin(103),
       }),
     ]);
+    // Sin enlace hasta que se vuelva a decidir: el precio nuevo puede ser de otro producto.
     expect(await offerRow('tienda-b', 'B1')).toMatchObject({
       match_status: 'pending',
       match_level: null,
-      variant_id: before.variant_id,
+      variant_id: null,
+      product_id: null,
     });
+    expect(before.variant_id).not.toBeNull();
     // El precio u otros campos no la reabren.
     await sync('tienda-b', [
       offer('B1', 'Licuadora Ondina Mix 600 1,5 L Roja OD-M600', {
@@ -446,6 +474,242 @@ describe.skipIf(!DATABASE_URL)('matching de extremo a extremo (H3)', () => {
     });
     expect((await offerRow('tienda-b', 'B3')).match_status).toBe('pending');
     await match();
+  });
+
+  it('sin capacidad, 128 GB y 256 GB nunca comparten variante, en cualquier orden de llegada', async () => {
+    await merchant('tienda-orden');
+    const configs = [
+      { key: 'sin', suffix: '' },
+      { key: '128', suffix: ' 128GB' },
+      { key: '256', suffix: ' 256GB' },
+    ] as const;
+    const orders = [
+      [0, 1, 2],
+      [0, 2, 1],
+      [1, 0, 2],
+      [1, 2, 0],
+      [2, 0, 1],
+      [2, 1, 0],
+    ];
+    for (const [n, order] of orders.entries()) {
+      // Un modelo por permutación: cada orden empieza sin ficha.
+      const model = `KA-OR${n + 1}`;
+      const feed: Feed = [];
+      for (const i of order) {
+        const c = configs[i]!;
+        feed.push(
+          offer(`OR${n + 1}-${c.key}`, `Celular Kalora Orbit ${model}${c.suffix}`, {
+            brand: 'Kalora',
+          }),
+        );
+        await sync('tienda-orden', [...feed]);
+        await match();
+      }
+      const row = (key: string) => offerRow('tienda-orden', `OR${n + 1}-${key}`);
+      const [sin, g128, g256] = await Promise.all([row('sin'), row('128'), row('256')]);
+      const label = `orden ${order.map((i) => configs[i]!.key).join(' → ')}`;
+      for (const r of [sin, g128, g256]) expect(r.variant_id, label).not.toBeNull();
+      // Las tres en la misma ficha, cada una en su variante.
+      expect(new Set([sin.product_id, g128.product_id, g256.product_id]).size, label).toBe(1);
+      expect(new Set([sin.variant_id, g128.variant_id, g256.variant_id]).size, label).toBe(3);
+      const attrs = await client.db
+        .select({ id: productVariants.id, attributes: productVariants.attributes })
+        .from(productVariants)
+        .where(eq(productVariants.productId, sin.product_id!));
+      const of = (id: string | null) => attrs.find((a) => a.id === id)!.attributes;
+      expect(of(sin.variant_id), label).toEqual({});
+      expect(of(g128.variant_id), label).toEqual({ storage_gb: 128 });
+      expect(of(g256.variant_id), label).toEqual({ storage_gb: 256 });
+    }
+  });
+
+  it('un fallo de escritura no deja en los logs la consulta ni los datos del feed', async () => {
+    const secretUrl =
+      'https://prueba.example/img.jpg?token=secreto_sintetico&email=persona@example.test';
+    // Falla de almacenamiento al insertar la variante (como un disco lleno o una restricción).
+    await client.sql.unsafe(`
+      create function falla_variante() returns trigger language plpgsql as $$
+      begin raise exception 'fallo de almacenamiento simulado'; end $$;
+      create trigger falla_variante before insert on product_variants
+        for each row execute function falla_variante();`);
+    const lines: string[] = [];
+    const record = (obj: object, msg?: string) => void lines.push(JSON.stringify({ ...obj, msg }));
+    const log = { info: record, warn: record, error: record };
+    try {
+      await sync('tienda-c', [
+        ...feeds.get('tienda-c')!,
+        offer('C6', 'Freidora Ondina Aire 5 L OD-FA5', { brand: 'Ondina', imageUrl: secretUrl }),
+      ]);
+      const result = await runMatching({ db: client, log });
+      expect(result.failed).toBe(1);
+      // El job tampoco lleva el mensaje a BullMQ.
+      const job = sanitizedProcessor(() =>
+        runMatching({ db: client, log: silentLog }).then(() => {
+          throw new Error(`Failed query: insert ... params: ${secretUrl}`);
+        }),
+      );
+      const thrown = await job({ data: { trigger: 'admin' } } as never).catch((e: Error) => e);
+      lines.push((thrown as Error).message);
+    } finally {
+      await client.sql.unsafe(
+        'drop trigger falla_variante on product_variants; drop function falla_variante();',
+      );
+    }
+    const all = lines.join('\n');
+    for (const leak of [
+      'secreto_sintetico',
+      'persona@example.test',
+      'Failed query',
+      'params',
+      'Freidora',
+    ])
+      expect(all).not.toContain(leak);
+    // El fallo sí se registra, con la oferta y el tipo de error.
+    const failure = lines.find((l) => l.includes('falló una oferta'))!;
+    expect(JSON.parse(failure)).toMatchObject({
+      err_type: expect.any(String),
+      err_code: 'P0001',
+    });
+    // Sin el fallo, la oferta se empareja en la siguiente ejecución.
+    expect((await match()).failed).toBe(0);
+    expect((await offerRow('tienda-c', 'C6')).variant_id).not.toBeNull();
+  });
+
+  it('una oferta que cambia de 128 a 256 GB no se publica bajo 128 GB antes del matching', async () => {
+    await merchant('tienda-vega');
+    const search = new SearchService({
+      client,
+      cache: new ListingCache(null, 0, silentLog),
+      log: silentLog,
+      weights: { text: 1, trgm: 0.5 },
+      logQueries: false,
+    });
+    const query = {
+      q: 'kalora vega',
+      sort: 'price_asc' as const,
+      page: 1,
+      page_size: 24,
+      discount_only: false,
+    };
+    await sync('tienda-vega', [
+      offer('V1', 'Celular Kalora Vega KA-VG1 128GB', { brand: 'Kalora', price: 1_500_000 }),
+      offer('V2', 'Kalora Vega KA-VG1 128GB', { brand: 'Kalora', price: 1_450_000 }),
+    ]);
+    await match();
+    const v1 = await offerRow('tienda-vega', 'V1');
+    const productId = v1.product_id!;
+    expect((await offerRow('tienda-vega', 'V2')).variant_id).toBe(v1.variant_id);
+
+    // La fuente cambia la misma oferta a 256 GB y $1.900.000. Antes del matching:
+    await sync('tienda-vega', [
+      offer('V1', 'Celular Kalora Vega KA-VG1 256GB', { brand: 'Kalora', price: 1_900_000 }),
+      offer('V2', 'Kalora Vega KA-VG1 128GB', { brand: 'Kalora', price: 1_450_000 }),
+    ]);
+    expect(await offerRow('tienda-vega', 'V1')).toMatchObject({
+      match_status: 'pending',
+      variant_id: null,
+      product_id: null,
+    });
+    const page = await search.product(productId);
+    const prices = page.variants.flatMap((v) => v.offers.map((o) => o.price));
+    expect(prices).toEqual([1_450_000]);
+    expect(page.max_price).toBe(1_450_000);
+    const listed = await search.search(query);
+    expect(listed.results.find((r) => r.product_id === productId)).toMatchObject({
+      offer_count: 1,
+      min_price: 1_450_000,
+    });
+
+    // Después del matching vuelve, en su propia variante de 256 GB.
+    await match();
+    const after = await search.product(productId);
+    const v256 = after.variants.find((v) => v.attributes.storage_gb === 256)!;
+    const v128 = after.variants.find((v) => v.attributes.storage_gb === 128)!;
+    expect(v256.offers.map((o) => o.price)).toEqual([1_900_000]);
+    expect(v128.offers.map((o) => o.price)).toEqual([1_450_000]);
+  });
+
+  it('una invalidación de caché que falla se recupera en la siguiente ejecución, aunque no haya pendientes', async () => {
+    await merchant('tienda-cache');
+    const data = new Map<string, string>();
+    const store: CacheStore = {
+      get: async (k) => data.get(k) ?? null,
+      set: async (k, v) => void data.set(k, v),
+    };
+    const search = new SearchService({
+      client,
+      cache: new ListingCache(store, 600, silentLog),
+      log: silentLog,
+      weights: { text: 1, trgm: 0.5 },
+      logQueries: false,
+    });
+    const query = {
+      q: 'tostadora brisa',
+      sort: 'price_asc' as const,
+      page: 1,
+      page_size: 24,
+      discount_only: false,
+    };
+    const bump = async () => {
+      const v = Number(data.get(CATALOG_VERSION_KEY) ?? '0');
+      data.set(CATALOG_VERSION_KEY, String(v + 1));
+    };
+    // Búsqueda vacía cacheada.
+    expect((await search.search(query)).total).toBe(0);
+    expect((await search.search(query)).cache.hit).toBe(true);
+
+    await sync('tienda-cache', [
+      offer('T1', 'Tostadora Brisa Dorada BR-T200', { brand: 'Brisa', price: 129_900 }),
+    ]);
+    // La invalidación falla (Redis caído) después de confirmar la ficha nueva.
+    const failing = await runMatching({
+      db: client,
+      log: silentLog,
+      onCatalogChanged: async () => {
+        throw new Error('Redis caído');
+      },
+    });
+    expect(failing.newProducts).toBe(1);
+    expect((await search.search(query)).total).toBe(0); // la caché sigue sirviendo el vacío
+    const [mark] = await client.db.select().from(catalogInvalidations);
+    expect(mark).toBeDefined();
+
+    // Siguiente ejecución: no hay ofertas pendientes, pero la invalidación se recupera.
+    const next = await runMatching({ db: client, log: silentLog, onCatalogChanged: bump });
+    expect(next.processed).toBe(0);
+    const res = await search.search(query);
+    expect(res.cache.hit).toBe(false);
+    expect(res.total).toBe(1);
+    expect(await client.db.select().from(catalogInvalidations)).toHaveLength(0);
+  });
+
+  it('la resolución manual también deja la invalidación pendiente si falla', async () => {
+    await sync('tienda-cache', [
+      ...feeds.get('tienda-cache')!,
+      offer('T2', 'Tostadora Brisa BR-T200 Plateada', { brand: 'Brisa', price: 119_900 }),
+    ]);
+    // Revisión abierta para la oferta pendiente (el matching no toca las que esperan revisión).
+    const t1 = await offerRow('tienda-cache', 'T1');
+    const t2 = await offerRow('tienda-cache', 'T2');
+    const [review] = await client.db
+      .insert(matchReviews)
+      .values({ offerId: t2.id, candidateVariantId: t1.variant_id!, score: 0.7 })
+      .returning();
+    await resolveReview(client, review!.id, 'accept', async () => {
+      throw new Error('Redis caído');
+    });
+    expect(await offerRow('tienda-cache', 'T2')).toMatchObject({ match_status: 'manual' });
+    expect(await client.db.select().from(catalogInvalidations)).toHaveLength(1);
+    // La siguiente ejecución del matching, sin pendientes, la recupera.
+    let bumped = 0;
+    const next = await runMatching({
+      db: client,
+      log: silentLog,
+      onCatalogChanged: async () => void bumped++,
+    });
+    expect(next.processed).toBe(0);
+    expect(bumped).toBe(1);
+    expect(await client.db.select().from(catalogInvalidations)).toHaveLength(0);
   });
 
   it('admin: lista la cola y aplica decisiones con validación', async () => {

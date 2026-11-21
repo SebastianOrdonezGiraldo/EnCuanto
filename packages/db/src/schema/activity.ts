@@ -7,6 +7,7 @@ import {
   pgEnum,
   pgTable,
   real,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
@@ -104,3 +105,16 @@ export const outboundClicks = pgTable(
   },
   (t) => [index('outbound_clicks_offer_created_idx').on(t.offerId, t.createdAt)],
 );
+
+/**
+ * Invalidación de la caché del catálogo pendiente (§8.6) por decisiones de matching. Se escribe
+ * en la misma transacción que la decisión, así que no se pierde si la invalidación (Redis) falla
+ * o el proceso se cae después de confirmar: la siguiente ejecución del matching la reintenta.
+ * Una sola fila; `generation` sube con cada cambio para no borrar uno que llegue mientras se
+ * invalida.
+ */
+export const catalogInvalidations = pgTable('catalog_invalidations', {
+  id: smallint().primaryKey().default(1),
+  generation: integer().notNull().default(1),
+  requestedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+});
