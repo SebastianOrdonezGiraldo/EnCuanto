@@ -1,7 +1,7 @@
 import { matchReviews, offers, type DbClient, type Database } from '@encuanto/db';
 import { and, eq, sql } from 'drizzle-orm';
 import { ConflictError, NotFoundError } from '../../shared/errors';
-import { createVariant } from '../catalog/index';
+import { createVariant, gtinInUse } from '../catalog/index';
 import { createProductFromOffer, lockCatalogForMatching } from './match.service';
 import { prepareTitle } from './title';
 
@@ -130,6 +130,21 @@ export async function resolveReview(
 ): Promise<{ variantId: string | null }> {
   const variantId = await client.db.transaction(async (tx) => {
     await lockCatalogForMatching(tx);
+    // Mismo orden de bloqueo que la ingesta (la oferta y luego su revisión, que borra el trigger
+    // `offers_reset_match`): al revés, un sync concurrente y esta petición se bloquean mutuamente.
+    const [target] = await tx.execute<{ offer_id: string }>(sql`
+      select offer_id from match_reviews where id = ${reviewId}`);
+    if (!target) throw new NotFoundError('Revisión no encontrada');
+    const [offer] = await tx.execute<{
+      id: string;
+      title_raw: string;
+      gtin: string | null;
+      brand: string | null;
+      image_url: string | null;
+      category: string | null;
+    }>(sql`
+      select id, title_raw, gtin, brand, image_url, category from offers
+       where id = ${target.offer_id} for update`);
     const [review] = await tx.execute<{
       id: string;
       status: string;
@@ -140,33 +155,27 @@ export async function resolveReview(
       select r.id, r.status, r.offer_id, r.candidate_variant_id, v.product_id
         from match_reviews r join product_variants v on v.id = r.candidate_variant_id
        where r.id = ${reviewId} for update of r`);
-    if (!review) throw new NotFoundError('Revisión no encontrada');
+    // Un sync pudo cambiar la oferta mientras se esperaba el bloqueo: el trigger borra la revisión.
+    if (!review) throw new ConflictError('La revisión ya no está pendiente');
     if (review.status !== 'pending') throw new ConflictError('La revisión ya está resuelta');
-    const [offer] = await tx.execute<{
-      id: string;
-      title_raw: string;
-      gtin: string | null;
-      brand: string | null;
-      image_url: string | null;
-      category: string | null;
-    }>(sql`
-      select id, title_raw, gtin, brand, image_url, category from offers
-       where id = ${review.offer_id} for update`);
     if (!offer) throw new NotFoundError('Oferta no encontrada');
 
     let assigned: string | null = null;
     const title = prepareTitle(offer.title_raw);
+    // Con `gtin_conflicto` el GTIN de la oferta ya es de la candidata: la tienda lo puso mal y la
+    // variante o la ficha nuevas quedan sin él (es único).
+    const gtin = (await gtinInUse(tx, offer.gtin)) ? null : offer.gtin;
     if (decision === 'accept') {
       assigned = review.candidate_variant_id;
     } else if (decision === 'new_variant') {
       assigned = await createVariant(tx, {
         productId: review.product_id,
-        gtin: offer.gtin,
+        gtin,
         attributes: title.attributes,
         imageUrl: offer.image_url,
       });
     } else if (decision === 'new_product') {
-      assigned = await createProductFromOffer(tx, offer, title);
+      assigned = await createProductFromOffer(tx, { ...offer, gtin }, title);
     }
 
     await tx

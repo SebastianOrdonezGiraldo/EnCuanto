@@ -61,6 +61,11 @@ describe('preparación del título', () => {
     expect(t.attributes).toEqual({ storage_gb: 256, ram_gb: 8, color: 'negro' });
     expect(t.modelKey).toBe('KAN12');
   });
+  it('quita el color como palabra completa, no dentro de otra ("Redmi … Red")', () => {
+    const t = prepareTitle('Celular Xiaomi Redmi Note 12 128GB Red');
+    expect(t.attributes.color).toBe('rojo');
+    expect(t.core).toBe('celular xiaomi redmi note 12');
+  });
   it('quita la garantía ("Garantía 1 año")', () => {
     expect(prepareTitle('Licuadora Ondina Mix 600 Garantía 1 año').core).toBe(
       'licuadora ondina mix 600',
@@ -158,6 +163,29 @@ describe('decisión (§8.2)', () => {
     expect(decide('Mouse inalámbrico Kalora KX-900', catalog)).toMatchObject({
       kind: 'review',
       reason: 'modelo_poco_parecido',
+    });
+  });
+  it('nivel 2 con dos fichas de la misma marca y modelo decide dentro de la más parecida', () => {
+    const otra = product({
+      id: 'otra',
+      canonicalName: 'Cargador Kalora Rapido',
+      modelNumber: 'KA-N12',
+      variants: [{ id: 'otra-v', gtin: null, attributes: { storage_gb: 256 } }],
+    });
+    const nova = product({
+      id: 'nova',
+      modelNumber: 'KA-N12',
+      variants: [{ id: 'nova-v', gtin: null, attributes: { storage_gb: 128 } }],
+    });
+    // La única variante de 256 GB es de la otra ficha: no se toma; se crea en la más parecida.
+    expect(decide('Celular Kalora Nova 12 KA-N12 256GB', [otra, nova])).toMatchObject({
+      kind: 'new_variant',
+      productId: 'nova',
+    });
+    expect(decide('Celular Kalora Nova 12 KA-N12 128GB', [otra, nova])).toMatchObject({
+      kind: 'auto',
+      level: 2,
+      variantId: 'nova-v',
     });
   });
   it('nivel 3 exige la misma marca; sin marca va a revisión', () => {

@@ -1,3 +1,4 @@
+import { removeFragments } from './attributes';
 /** Unidades que, pegadas a un número, son atributos y no modelos (`5000mah`, `120hz`, `256gb`). */
 const UNIT_TOKEN =
   /^\d+(?:[.,]\d+)?(?:gb|tb|mb|l|lt|lts|litros?|pulgadas?|pulg|mah|w|hz|mp|mm|cm|kg|btu|rpm|ghz|v)$/;
@@ -11,8 +12,7 @@ const STOPWORDS =
  * Si hay varios candidatos se elige el más largo. Devuelve el modelo en mayúsculas o `null`.
  */
 export function extractModelNumber(text: string, excluded: readonly string[] = []): string | null {
-  let rest = text;
-  for (const fragment of excluded) rest = rest.replace(fragment, ' ');
+  const rest = removeFragments(text, excluded);
 
   let best: string | null = null;
   for (const raw of rest.split(/[\s,;:/()[\]{}|"'+]+/)) {

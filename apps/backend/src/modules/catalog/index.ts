@@ -7,6 +7,7 @@ export {
   ensureBrand,
   ensureCategory,
   fillVariantGtin,
+  gtinInUse,
   type NewProductInput,
   type NewVariantInput,
 } from './products.service';

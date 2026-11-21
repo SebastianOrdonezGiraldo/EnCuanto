@@ -185,9 +185,10 @@ export function decideMatch(offer: MatchOffer, candidates: MatchCandidates): Mat
     (p) => offer.brand && p.brand === offer.brand && title.modelKey && sameModel(p, title),
   );
   if (byModel.length > 0) {
+    // Si dos fichas comparten marca y modelo, se decide dentro de la más parecida: la variante (o
+    // la variante nueva) nunca sale de otra ficha.
     const best = byModel.map((p) => ({ product: p, score: score(p) })).sort(bySimilarity)[0]!;
-    const variants = byModel.flatMap((p) => p.variants);
-    const choice = chooseVariant(title.attributes, variants, offer.gtin);
+    const choice = chooseVariant(title.attributes, best.product.variants, offer.gtin);
     const reviewVariant = choice.kind === 'none' ? choice.nearest : choice.variant;
     const blocked: ReviewReason | null =
       kindConflict(best.product) ??
@@ -204,11 +205,11 @@ export function decideMatch(offer: MatchOffer, candidates: MatchCandidates): Mat
         fillGtin: !!offer.gtin && !choice.variant.gtin,
       };
     } else if (choice.kind === 'none') {
-      // Mismo modelo con atributos nuevos (p. ej. 512 GB): variante nueva de la ficha más antigua.
+      // Mismo modelo con atributos nuevos (p. ej. 512 GB): variante nueva de esa ficha.
       return {
         kind: 'new_variant',
         level: 2,
-        productId: byModel[0]!.id,
+        productId: best.product.id,
         confidence: CONFIDENCE[2],
       };
     } else {

@@ -9,7 +9,7 @@ import {
   type DbClient,
 } from '@encuanto/db';
 import { eq, sql } from 'drizzle-orm';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -389,6 +389,65 @@ describe.skipIf(!DATABASE_URL)('matching de extremo a extremo (H3)', () => {
     expect((await match()).processed).toBe(0);
   });
 
+  it('gtin_conflicto: la variante o la ficha nuevas no reutilizan el GTIN de la candidata', async () => {
+    // La tienda puso el GTIN de la licuadora Ondina a dos productos Kalora.
+    const g = gtin(103);
+    await sync('tienda-c', [
+      ...feeds.get('tienda-c')!,
+      offer('C4', 'Celular Kalora Nova 12 KA-N12 512GB Verde', { brand: 'Kalora', gtin: g }),
+      offer('C5', 'Audífonos Kalora Beat 2', { brand: 'Kalora', gtin: g }),
+    ]);
+    await match();
+    const pending = await listReviews(client.db, { limit: 50 });
+    const reviewOf = async (externalId: string) => {
+      const row = await offerRow('tienda-c', externalId);
+      return pending.find((r) => r.offer.id === row.id)!;
+    };
+    const c4 = await reviewOf('C4');
+    const c5 = await reviewOf('C5');
+    expect(c4.reason).toBe('gtin_conflicto');
+    expect(c5.reason).toBe('gtin_conflicto');
+
+    const nv = await resolveReview(client, c4.id, 'new_variant');
+    const np = await resolveReview(client, c5.id, 'new_product');
+    const created = await client.db
+      .select({ id: productVariants.id, gtin: productVariants.gtin })
+      .from(productVariants)
+      .where(sql`${productVariants.id} in (${nv.variantId!}, ${np.variantId!})`);
+    expect(created).toHaveLength(2);
+    expect(created.every((v) => v.gtin === null)).toBe(true);
+    const [{ n }] =
+      (await client.sql`select count(*)::int as n from product_variants where gtin = ${g}`) as unknown as [
+        { n: number },
+      ];
+    expect(n).toBe(1);
+  });
+
+  it('resolver una revisión que un sync acaba de descartar no toca la oferta', async () => {
+    await sync('tienda-b', [
+      ...feeds.get('tienda-b')!,
+      offer('B3', 'Kalora Nova 12 64GB 4GB Gold - Envío gratis', { brand: 'Kalora' }),
+    ]);
+    await match();
+    const b3 = await offerRow('tienda-b', 'B3');
+    const [review] = await client.db
+      .select()
+      .from(matchReviews)
+      .where(eq(matchReviews.offerId, b3.id));
+    expect(review?.status).toBe('pending');
+    // El sync cambia el título: el trigger borra la revisión pendiente.
+    await sync('tienda-b', [
+      ...feeds.get('tienda-b')!.filter((o) => o.externalId !== 'B3'),
+      offer('B3', 'Kalora Nova 12 64GB 4GB Dorado', { brand: 'Kalora' }),
+    ]);
+    // La revisión ya no existe: 404, y la oferta sigue pendiente para el matching.
+    await expect(resolveReview(client, review!.id, 'accept')).rejects.toMatchObject({
+      statusCode: 404,
+    });
+    expect((await offerRow('tienda-b', 'B3')).match_status).toBe('pending');
+    await match();
+  });
+
   it('admin: lista la cola y aplica decisiones con validación', async () => {
     await sync('tienda-b', [
       ...feeds.get('tienda-b')!,
@@ -489,5 +548,40 @@ describe.skipIf(!DATABASE_URL)('matching de extremo a extremo (H3)', () => {
       .from(offers)
       .where(sql`${offers.gtin} is not null`);
     expect(offersWithGtin.every((o) => o.g!.length === 14)).toBe(true);
+  });
+
+  it('migración 0005: un UPC-12 y su EAN-13 con cero inicial no rompen la unicidad', async () => {
+    // Se ejecuta la sentencia tal como está en la migración, sobre dos variantes que dan el mismo
+    // GTIN de 14 dígitos, y se deshace.
+    const migration = readFileSync(
+      new URL('../../../../packages/db/migrations/0005_matching.sql', import.meta.url),
+      'utf8',
+    );
+    const update = migration
+      .split('--> statement-breakpoint')
+      .map((part) => part.trim())
+      .find((part) => part.includes('UPDATE "product_variants"'))!;
+    expect(update).toBeTruthy();
+    const rows = await client.sql
+      .begin(async (tx) => {
+        const [p] =
+          await tx`insert into products (canonical_name) values ('Prueba GTIN') returning id`;
+        await tx`insert into product_variants (product_id, gtin, attributes) values
+          (${p!.id}, '012345678905', '{}'), (${p!.id}, '0012345678905', '{"color":"negro"}')`;
+        await tx.unsafe(update);
+        const out =
+          await tx`select gtin from product_variants where product_id = ${p!.id} order by gtin`;
+        throw Object.assign(new Error('rollback'), { out });
+      })
+      .catch((error: { out?: { gtin: string }[] }) => {
+        if (!error.out) throw error;
+        return error.out;
+      });
+    // Una pasa a 14 dígitos (la primera por id) y la otra conserva su código original.
+    const gtins = rows.map((r) => r.gtin);
+    expect(gtins.filter((g) => g === '00012345678905')).toHaveLength(1);
+    expect(gtins.filter((g) => g !== '00012345678905')).toEqual([
+      expect.stringMatching(/^0?012345678905$/),
+    ]);
   });
 });

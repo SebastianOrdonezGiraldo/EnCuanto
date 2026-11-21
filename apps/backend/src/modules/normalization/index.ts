@@ -1,6 +1,6 @@
 /** Módulo `normalization` (§8.1): funciones puras, sin BD ni red. */
 export { ACCESSORY_TERMS } from './accessory';
-export { extractAttributes, type ExtractedAttributes } from './attributes';
+export { extractAttributes, removeFragments, type ExtractedAttributes } from './attributes';
 export {
   BRAND_ALIASES,
   brandKey,

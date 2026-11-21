@@ -91,6 +91,23 @@ export interface ExtractedAttributes {
   matched: string[];
 }
 
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Quita de un texto normalizado los fragmentos reconocidos como atributos, cada uno como palabra
+ * completa: el color "red" de "Redmi Note 12 Red" no se borra dentro de "Redmi".
+ */
+export function removeFragments(text: string, fragments: readonly string[]): string {
+  let rest = text;
+  for (const fragment of fragments) {
+    if (!fragment) continue;
+    const start = /^[a-z0-9]/.test(fragment) ? '(?<![a-z0-9])' : '';
+    const end = /[a-z0-9]$/.test(fragment) ? '(?![a-z0-9])' : '';
+    rest = rest.replace(new RegExp(`${start}${escapeRegExp(fragment)}${end}`), ' ');
+  }
+  return rest;
+}
+
 /** Extrae color, almacenamiento, RAM, litros, pulgadas y kilos de un título normalizado. */
 export function extractAttributes(text: string): ExtractedAttributes {
   const attributes: VariantAttributes = {};
@@ -112,7 +129,7 @@ export function extractAttributes(text: string): ExtractedAttributes {
     attributes.ram_gb = Number(plus[1]);
     attributes.storage_gb = toNumber(plus[2]!) * (plus[3] === 'tb' ? 1024 : 1);
     matched.push(plus[0]);
-    rest = rest.replace(plus[0], ' ');
+    rest = removeFragments(rest, [plus[0]]);
   }
 
   if (attributes.storage_gb === undefined) {

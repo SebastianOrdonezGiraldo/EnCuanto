@@ -95,6 +95,18 @@ export async function createVariant(db: DbExecutor, input: NewVariantInput): Pro
   return row!.id;
 }
 
+/** Si alguna variante ya usa ese GTIN (normalizado). */
+export async function gtinInUse(db: DbExecutor, gtin: string | null): Promise<boolean> {
+  const normalized = normalizeGtin(gtin);
+  if (!normalized) return false;
+  const [row] = await db
+    .select({ id: productVariants.id })
+    .from(productVariants)
+    .where(eq(productVariants.gtin, normalized))
+    .limit(1);
+  return !!row;
+}
+
 /**
  * Completa el GTIN de una variante que no lo tiene, si ninguna otra variante lo usa. Devuelve si
  * lo escribió. Solo lo llama el matching con enlaces de nivel 2 (marca + modelo + atributos).

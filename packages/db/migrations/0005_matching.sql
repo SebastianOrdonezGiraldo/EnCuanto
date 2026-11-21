@@ -15,10 +15,16 @@ CREATE UNIQUE INDEX "match_reviews_offer_pending_unique" ON "match_reviews" USIN
 CREATE INDEX "products_brand_model_key_idx" ON "products" USING btree ("brand_id",regexp_replace(upper("model_number"), '[^A-Z0-9]', '', 'g'));--> statement-breakpoint
 CREATE INDEX "offers_match_pending_idx" ON "offers" USING btree ("first_seen_at","id") WHERE "offers"."match_status" = 'pending';--> statement-breakpoint
 -- Las ofertas guardan el GTIN en 14 dígitos (normalizeGtin): las variantes, igual. Si ya existe
--- la forma de 14 dígitos en otra variante, se deja la original (no se rompe la unicidad).
-UPDATE "product_variants" v SET "gtin" = lpad(v."gtin", 14, '0')
- WHERE v."gtin" ~ '^[0-9]{8}$|^[0-9]{12,13}$'
-   AND NOT EXISTS (SELECT 1 FROM "product_variants" o WHERE o."gtin" = lpad(v."gtin", 14, '0'));--> statement-breakpoint
+-- la forma de 14 dígitos en otra variante, o varias variantes dan la misma (UPC-12 y EAN-13 con
+-- cero inicial), solo pasa la primera por id y las demás conservan la original: no se rompe la
+-- unicidad.
+UPDATE "product_variants" v SET "gtin" = c."target"
+  FROM (SELECT "id", "target",
+               row_number() OVER (PARTITION BY "target" ORDER BY "id") AS "rn"
+          FROM (SELECT "id", lpad("gtin", 14, '0') AS "target" FROM "product_variants"
+                 WHERE "gtin" ~ '^[0-9]{8}$|^[0-9]{12,13}$') s) c
+ WHERE v."id" = c."id" AND c."rn" = 1
+   AND NOT EXISTS (SELECT 1 FROM "product_variants" o WHERE o."gtin" = c."target");--> statement-breakpoint
 -- Una oferta emparejada por el algoritmo (auto), descartada (rejected) o pendiente vuelve a
 -- `pending` si cambian los datos con los que se decidió. Conserva la variante hasta que el
 -- matching vuelva a decidir (sigue visible). Las decididas por una persona (manual) no se tocan.

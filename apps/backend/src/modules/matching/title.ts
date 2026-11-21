@@ -5,6 +5,7 @@ import {
   extractModelNumber,
   isSpecToken,
   normalizeText,
+  removeFragments,
 } from '../normalization/index';
 
 /**
@@ -76,9 +77,7 @@ export function modelKey(model: string | null | undefined): string | null {
 }
 
 function coreOf(normalized: string, fragments: readonly string[]): string {
-  let rest = normalized.replace(WARRANTY, ' ');
-  for (const fragment of fragments) rest = rest.replace(fragment, ' ');
-  return rest
+  return removeFragments(normalized.replace(WARRANTY, ' '), fragments)
     .split(/\s+/)
     .filter((t) => /[a-z0-9]/.test(t) && !NOISE_WORDS.has(t.replace(/[^a-z0-9]/g, '')))
     .join(' ');
