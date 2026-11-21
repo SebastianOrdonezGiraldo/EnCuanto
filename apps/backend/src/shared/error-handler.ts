@@ -1,4 +1,5 @@
 import type { ErrorResponse } from '@encuanto/contracts';
+import { safeErrorInfo, safeStack } from './safe-error';
 import type { FastifyError, FastifyInstance } from 'fastify';
 import { DomainError } from './errors';
 
@@ -15,7 +16,11 @@ export function registerErrorHandler(app: FastifyInstance): void {
     const statusCode =
       'statusCode' in error && typeof error.statusCode === 'number' ? error.statusCode : 500;
     if (statusCode >= 500) {
-      request.log.error({ err: error }, 'error no controlado');
+      // Sin el mensaje ni la causa: el de un error de BD lleva la consulta y sus parámetros (§4).
+      request.log.error(
+        { ...safeErrorInfo(error), stack: safeStack(error) },
+        'error no controlado',
+      );
       const body: ErrorResponse = { error: { code: 'internal_error', message: 'Error interno' } };
       return reply.status(500).send(body);
     }

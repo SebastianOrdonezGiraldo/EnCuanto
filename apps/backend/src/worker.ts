@@ -18,6 +18,7 @@ import {
   runMatching,
 } from './modules/matching/index';
 import { loadConfig } from './shared/config';
+import { safeErrorInfo } from './shared/safe-error';
 import { CATALOG_VERSION_KEY } from './shared/catalog-version';
 import { resolveFixturesDir } from './shared/paths';
 
@@ -58,7 +59,7 @@ const worker = createSyncWorker(
         merchantSlug: job.data.merchantSlug,
       }).catch((err: Error) =>
         // No tapa el resultado del sync: las pendientes las recoge el siguiente matching.
-        log.warn({ err: err.message }, 'matching: no se pudo encolar'),
+        log.warn(safeErrorInfo(err), 'matching: no se pudo encolar'),
       );
     }
   },
