@@ -12,7 +12,7 @@ const categorySlugSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/);
 const PUBLIC_CACHE = 'public, max-age=60';
 
 /**
- * Rutas públicas de búsqueda y navegación (§7, H2). Los logs de Fastify solo registran el patrón
+ * Rutas públicas de búsqueda y navegación (§7, H2) y ficha de producto (H3). Los logs de Fastify solo registran el patrón
  * de la ruta (`/api/search`), nunca la consulta.
  */
 export function registerSearchRoutes(app: FastifyInstance, service: SearchService): void {
@@ -20,6 +20,13 @@ export function registerSearchRoutes(app: FastifyInstance, service: SearchServic
     const query = parseOrThrow(searchQuerySchema, request.query);
     reply.header('cache-control', PUBLIC_CACHE);
     return service.search(query);
+  });
+
+  app.get('/api/products/:id', async (request, reply) => {
+    const id = z.uuid().safeParse((request.params as { id: string }).id);
+    if (!id.success) throw new NotFoundError('Producto no encontrado');
+    reply.header('cache-control', PUBLIC_CACHE);
+    return service.product(id.data);
   });
 
   app.get('/api/categories', async (_request, reply) => {

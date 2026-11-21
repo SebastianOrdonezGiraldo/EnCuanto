@@ -5,6 +5,7 @@ import {
   type ListingQuery,
   type MerchantListingResponse,
   type MerchantsResponse,
+  type ProductResponse,
   type SearchQuery,
   type SearchResponse,
   type SearchResult,
@@ -17,6 +18,7 @@ import { loadBrandNames } from '../catalog/index';
 import { brandKey, buildBrandDictionary, type BrandDictionary } from '../normalization/index';
 import { cacheKey, type CachedListing, type ListingCache } from './cache';
 import { parseQuery } from './query';
+import { getProductPage } from './product.repository';
 import { logSearchQuery } from './query-log';
 import { discountPct, rankListing, type ListingFilters, type RankOptions } from './rank';
 import {
@@ -180,6 +182,13 @@ export class SearchService {
       merchant: { slug: merchant.slug, name: merchant.name },
       ...(await this.page(listing, hit, query, [merchant.slug])),
     };
+  }
+
+  /** GET /api/products/:id (§7, H3): ficha con variantes y ofertas vigentes. */
+  async product(id: string): Promise<ProductResponse> {
+    const page = await getProductPage(this.deps.client.sql, id, this.now());
+    if (!page) throw new NotFoundError('Producto no encontrado');
+    return page;
   }
 
   async categories(): Promise<CategoriesResponse> {
