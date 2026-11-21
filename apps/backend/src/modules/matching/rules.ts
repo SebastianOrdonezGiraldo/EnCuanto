@@ -110,12 +110,19 @@ function conflicts(a: VariantAttributes, b: VariantAttributes): number {
 type VariantChoice =
   | { kind: 'one'; variant: CandidateVariant }
   | { kind: 'ambiguous'; variant: CandidateVariant }
+  /**
+   * Compatible pero no idéntica: a la variante o a la oferta le falta un atributo que la otra
+   * tiene ("Nova 12" frente a "Nova 12 128GB"). Sin un GTIN que lo confirme, no se enlaza: la
+   * falta de un dato no prueba que sea la misma configuración.
+   */
+  | { kind: 'partial'; variant: CandidateVariant }
   | { kind: 'none'; nearest: CandidateVariant | null };
 
 /**
- * Variante de la oferta entre las de una o varias fichas: la única con los mismos atributos o,
- * si no la hay, la única compatible. Si hay varias compatibles, es ambigua. Una variante con otro
- * GTIN válido no es compatible: dos GTIN distintos son dos productos distintos.
+ * Variante de la oferta entre las de una ficha: la única con exactamente los mismos atributos.
+ * Si varias los tienen, es ambigua; si solo hay compatibles con atributos de más o de menos, es
+ * parcial; si ninguna es compatible, ninguna. Una variante con otro GTIN válido no es compatible:
+ * dos GTIN distintos son dos productos distintos.
  */
 export function chooseVariant(
   attributes: VariantAttributes,
@@ -133,8 +140,8 @@ export function chooseVariant(
   }
   const exact = compat.filter((v) => sameAttributes(attributes, v.attributes));
   if (exact.length === 1) return { kind: 'one', variant: exact[0]! };
-  if (compat.length === 1) return { kind: 'one', variant: compat[0]! };
-  return { kind: 'ambiguous', variant: exact[0] ?? compat[0]! };
+  if (exact.length > 1) return { kind: 'ambiguous', variant: exact[0]! };
+  return { kind: 'partial', variant: compat[0]! };
 }
 
 const sameSet = (a: readonly string[], b: readonly string[]) =>
@@ -204,8 +211,10 @@ export function decideMatch(offer: MatchOffer, candidates: MatchCandidates): Mat
         confidence: CONFIDENCE[2],
         fillGtin: !!offer.gtin && !choice.variant.gtin,
       };
-    } else if (choice.kind === 'none') {
-      // Mismo modelo con atributos nuevos (p. ej. 512 GB): variante nueva de esa ficha.
+    } else if (choice.kind === 'none' || choice.kind === 'partial') {
+      // Mismo modelo con otra configuración (p. ej. 512 GB, o una con más o menos datos que las
+      // que hay): variante nueva de esa ficha. Así "sin capacidad", "128 GB" y "256 GB" nunca
+      // comparten variante, llegue primero la que llegue.
       return {
         kind: 'new_variant',
         level: 2,
@@ -241,7 +250,7 @@ export function decideMatch(offer: MatchOffer, candidates: MatchCandidates): Mat
           : (kindConflict(product) ??
             (!sameSet(title.identity, name.identity)
               ? 'numeros_distintos'
-              : choice.kind === 'none'
+              : choice.kind === 'none' || choice.kind === 'partial'
                 ? 'variante_nueva'
                 : choice.kind === 'ambiguous'
                   ? 'variante_ambigua'

@@ -128,12 +128,24 @@ describe('compatibilidad de atributos y elección de variante (§8.2)', () => {
     { id: 'negro', gtin: null, attributes: { storage_gb: 256, color: 'negro' } },
     { id: 'azul', gtin: null, attributes: { storage_gb: 256, color: 'azul' } },
   ];
-  it('la única idéntica, la única compatible o ambigua', () => {
+  it('solo la idéntica; con atributos de más o de menos es parcial', () => {
     expect(chooseVariant({ storage_gb: 256, color: 'azul' }, variants)).toMatchObject({
       kind: 'one',
       variant: { id: 'azul' },
     });
-    expect(chooseVariant({ storage_gb: 256 }, variants)).toMatchObject({ kind: 'ambiguous' });
+    expect(chooseVariant({ storage_gb: 256 }, variants)).toMatchObject({ kind: 'partial' });
+    // Una variante sin atributos no absorbe una configuración conocida.
+    expect(
+      chooseVariant({ storage_gb: 128 }, [{ id: 'vacia', gtin: null, attributes: {} }]),
+    ).toMatchObject({
+      kind: 'partial',
+    });
+    expect(
+      chooseVariant({ storage_gb: 128 }, [
+        { id: 'a', gtin: null, attributes: { storage_gb: 128 } },
+        { id: 'b', gtin: null, attributes: { storage_gb: 128 } },
+      ]),
+    ).toMatchObject({ kind: 'ambiguous' });
     expect(chooseVariant({ storage_gb: 512 }, variants)).toMatchObject({ kind: 'none' });
   });
   it('otro GTIN válido en la variante la hace incompatible', () => {

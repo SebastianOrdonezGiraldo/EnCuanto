@@ -544,8 +544,10 @@ export const OFFERS: DatasetOffer[] = [
     'Portátil Vireo Book 14 VR-B14 16GB RAM 512GB SSD',
     'vireo',
     null,
-    { variant: 'book14-16-512' },
-    'modelo (nivel 2)',
+    // La variante del catálogo dice 14": el título no trae la pantalla. Sin GTIN, que falte un
+    // atributo no prueba que sea la misma configuración: variante propia, no la de 14".
+    { newVariantOf: 'book14' },
+    'modelo (nivel 2) sin la pantalla en el título',
   ),
   o(
     'Portátil Vireo Book 14 Intel Core i5 8GB RAM 256GB SSD 14"',
