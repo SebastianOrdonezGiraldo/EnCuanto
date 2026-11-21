@@ -1,34 +1,14 @@
 import type { VariantAttributes } from '@encuanto/db';
 import {
+  ACCESSORY_TERMS,
   extractAttributes,
   normalizeBrand,
   normalizeText,
   type BrandDictionary,
 } from '../normalization/index';
 
-/** Términos que indican que se busca un accesorio (§8.3: sin ellos, los accesorios se penalizan). */
-export const ACCESSORY_TERMS: ReadonlySet<string> = new Set([
-  'accesorio',
-  'accesorios',
-  'adaptador',
-  'base',
-  'cable',
-  'cables',
-  'cargador',
-  'cargadores',
-  'case',
-  'correa',
-  'estuche',
-  'forro',
-  'funda',
-  'fundas',
-  'mica',
-  'protector',
-  'repuesto',
-  'soporte',
-  'templado',
-  'vidrio',
-]);
+/** Términos de accesorio (§8.3); viven en `normalization`, que los comparte con el matching. */
+export { ACCESSORY_TERMS };
 
 /** Máximo de términos que entran en la consulta de texto. */
 export const MAX_TERMS = 12;

@@ -27,6 +27,12 @@ const RAM_PLUS_STORAGE = /\b(\d{1,2})\s?(?:gb)?\s?\+\s?(\d{2,4})\s?(gb|tb)\b/;
 const STORAGE = /\b(\d+(?:[.,]\d+)?)\s?(gb|tb)\b/g;
 const LITERS = /\b(\d+(?:[.,]\d+)?)\s?(?:l|lt|lts|litros?)\b/;
 const SCREEN = /\b(\d{1,3}(?:[.,]\d)?)\s?(?:"|”|“|''|′′|″|pulgadas?\b|pulg\b)/;
+/**
+ * Kilos (H3): ampliación de §8.1.3. En lavadoras y secadoras la capacidad en kg distingue la
+ * variante ("Lavadora 17 Kg" frente a "19 Kg" del mismo modelo); sin ella, el matching las
+ * confundiría.
+ */
+const WEIGHT = /\b(\d{1,3}(?:[.,]\d{1,2})?)\s?(?:kg|kgs|kilos?|kilogramos?)\b/;
 
 /** Colores admitidos (lista cerrada) y sus variantes de género, plural e inglés. */
 const COLOR_ALIASES: Record<string, string> = {
@@ -85,7 +91,7 @@ export interface ExtractedAttributes {
   matched: string[];
 }
 
-/** Extrae color, almacenamiento, RAM, litros y pulgadas de un título normalizado. */
+/** Extrae color, almacenamiento, RAM, litros, pulgadas y kilos de un título normalizado. */
 export function extractAttributes(text: string): ExtractedAttributes {
   const attributes: VariantAttributes = {};
   const matched: string[] = [];
@@ -141,8 +147,17 @@ export function extractAttributes(text: string): ExtractedAttributes {
     }
   }
 
+  const weight = WEIGHT.exec(rest);
+  if (weight) {
+    attributes.weight_kg = toNumber(weight[1]!);
+    matched.push(weight[0]);
+  }
+
   const color = COLOR.exec(rest);
-  if (color) attributes.color = COLOR_ALIASES[color[1]!];
+  if (color) {
+    attributes.color = COLOR_ALIASES[color[1]!];
+    matched.push(color[0]);
+  }
 
   return { attributes, matched };
 }
