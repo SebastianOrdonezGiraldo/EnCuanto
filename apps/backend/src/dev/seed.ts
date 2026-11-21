@@ -6,6 +6,7 @@ import { CATALOG_VERSION_KEY } from '../shared/catalog-version';
 import { loadConfig } from '../shared/config';
 import { resolveFixturesDir } from '../shared/paths';
 import { seedSynthetic } from './seed-synthetic';
+import { evaluateSyntheticMatching } from './synthetic-catalog';
 
 /**
  * Seed sintético: genera los feeds de 3 comerciantes ficticios (≥ 2.000 ofertas), los
@@ -14,10 +15,13 @@ import { seedSynthetic } from './seed-synthetic';
  *
  *   pnpm db:seed              # día 0
  *   pnpm db:seed --day 3      # simula 3 días: ~12 % de precios cambia cada día
+ *   pnpm db:seed --matching   # sin fichas conocidas: las construye el matching de H3 (BD vacía)
  *
  * Reejecutarlo con el mismo día no crea ofertas ni historial nuevos (idempotente).
  */
-const { values } = parseArgs({ options: { day: { type: 'string', default: '0' } } });
+const { values } = parseArgs({
+  options: { day: { type: 'string', default: '0' }, matching: { type: 'boolean', default: false } },
+});
 const day = Number(values.day);
 if (!Number.isInteger(day) || day < 0) {
   process.stderr.write('--day debe ser un entero ≥ 0\n');
@@ -47,24 +51,33 @@ async function bumpCatalogVersion(url: string): Promise<void> {
 }
 
 try {
-  const { feeds, catalog } = await seedSynthetic(client, {
+  const seeded = await seedSynthetic(client, {
     fixturesDir,
     day,
+    link: values.matching ? 'matching' : 'catalog',
     onSync: (r) =>
       out(
         `${r.merchantSlug.padEnd(18)} ${r.status}  vistas ${r.itemsSeen}  nuevas ${r.itemsInserted}  ` +
           `cambios de precio ${r.itemsPriceChanged}  cuarentena ${r.itemsQuarantined}`,
       ),
   });
+  const { feeds, catalog, matching } = seeded;
   out(
     `Feeds sintéticos del día ${day}: ${feeds.validOffers} ofertas válidas + ${feeds.invalidOffers} inválidas`,
   );
   const total = [...(await countOffersByMerchant(client.db)).values()].reduce((a, b) => a + b, 0);
   out(`Ofertas en la BD: ${total}`);
-  out(
-    `Fichas: ${catalog.products} productos, ${catalog.variants} variantes, ` +
-      `${catalog.linked} ofertas enlazadas en esta ejecución`,
-  );
+  if (catalog) {
+    out(
+      `Fichas: ${catalog.products} productos, ${catalog.variants} variantes, ` +
+        `${catalog.linked} ofertas enlazadas en esta ejecución`,
+    );
+  }
+  if (matching) {
+    out(`Matching: ${JSON.stringify(matching)}`);
+    const report = await evaluateSyntheticMatching(client.db, feeds.catalog, seeded.merchantIds);
+    out(`Evaluación frente a la variante real de cada oferta: ${JSON.stringify(report)}`);
+  }
   await bumpCatalogVersion(config.REDIS_URL);
 } finally {
   await client.close();

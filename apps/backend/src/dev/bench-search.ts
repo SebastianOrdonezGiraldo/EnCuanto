@@ -103,8 +103,8 @@ try {
   await client.sql`vacuum analyze`;
   const offers = seeded.syncs.reduce((n, r) => n + r.itemsUpserted, 0);
   out(
-    `Catálogo: ${offers} ofertas, ${seeded.catalog.products} productos, ` +
-      `${seeded.catalog.variants} variantes (${((performance.now() - t) / 1000).toFixed(1)} s)`,
+    `Catálogo: ${offers} ofertas, ${seeded.catalog?.products ?? 0} productos, ` +
+      `${seeded.catalog?.variants ?? 0} variantes (${((performance.now() - t) / 1000).toFixed(1)} s)`,
   );
 
   const urls = Array.from({ length: REQUESTS }, (_, i) => {
